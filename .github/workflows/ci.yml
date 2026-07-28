@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: 取得原始碼
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安裝 uv（含快取）
         uses: astral-sh/setup-uv@v4
@@ -55,7 +55,7 @@ jobs:
         python-version: ["3.12", "3.13"]
     steps:
       - name: 取得原始碼
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安裝 uv（含快取，並指定 Python 版本）
         uses: astral-sh/setup-uv@v4
@@ -75,7 +75,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: 取得原始碼
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安裝 uv（含快取）
         uses: astral-sh/setup-uv@v4
@@ -160,7 +160,7 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - name: 取得完整 commit 歷史
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
