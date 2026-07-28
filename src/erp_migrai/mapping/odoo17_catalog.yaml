@@ -1,0 +1,303 @@
+# ============================================================================
+# Odoo 17 目標欄位 catalog
+# ============================================================================
+#
+# 誠實性聲明（請先讀完再使用這份檔案）：
+#
+# 這份 catalog 是**人工整理**的結果——由維護者閱讀 Odoo 17 Community Edition
+# 的官方文件與原始碼（odoo/odoo，17.0 分支）逐一核對後手寫下來，**不是**從一台
+# 正在跑的 Odoo 17 實例反射（introspect）出來的。這代表它可能有錯：欄位型別
+# 記錯、欄位其實不存在、或者欄位存在但所屬模組記錯，都有可能發生。
+#
+# 目標版本／版別：Odoo 17.0，Community Edition（CE）。這份 catalog 完全沒有
+# 涵蓋 Enterprise-only 的模型或欄位。
+#
+# 如果你手上有一台真正的 Odoo 17，發現這裡的記載與實際情況不符——型別不對、
+# 欄位根本不存在、或欄位存在但 module 掛錯——那是一個值得回報的臭蟲，不是你
+# 用錯了。請開 parser-gap-report issue（與 4GL parser 回報解析落差用同一個
+# 管道），註明是哪個模型、哪個欄位、你看到的實際情況。
+#
+# 為什麼每個欄位都要記 `module`：Odoo 的欄位不是全部在核心模組（base）裡就
+# 一次到位，一個欄位存在與否，取決於它所屬的模組有沒有被安裝。最具體的例子
+# 就是 `res.partner.credit_limit`——這個欄位是 `account` 模組安裝後才會出現
+# 在 `res.partner` 上的，一個乾淨的 Odoo（沒裝 account）上完全沒有這個欄位。
+# 如果這裡把它的 module 錯記成 `base`，`load` 階段寫入時會在一台沒裝 account
+# 的 Odoo 上失敗，而且失敗訊息不會告訴你「因為 module 沒裝」——這正是這份
+# catalog 存在的意義：讓這類落差在 `map` 階段就能被看見、被解釋，而不是留到
+# `load` 階段才用一個看不懂的錯誤炸出來。
+#
+# 內容範圍：只涵蓋 spec §2.5 三個 MVP 資料切片對應的模型（res.partner、
+# product.template、sale.order），外加 sale.order.line——因為 sale.order
+# 是「單頭 + 明細行」的形狀，沒有明細行模型，訂單映射就是不完整的。欄位也只收
+# MVP 用得到的，不是這幾個模型在 Odoo 裡的全部欄位。
+#
+# ----------------------------------------------------------------------------
+#
+# 已對照原始碼核實（而非僅憑文件或印象）：
+#
+# 「人工整理」這四個字誠實，但無從證偽——沒有人知道維護者到底核對過什麼、
+# 沒核對過什麼。以下四筆是實際打開 odoo/odoo 17.0 分支原始碼、逐行核對過的，
+# 具體到檔案與行號；沒有列在這裡的欄位，代表它們的記載仍然只是依據文件與
+# 記憶整理，尚未逐行對照原始碼——這不代表它們是錯的，只是誠實標示「這裡的
+# 確定程度比較低」，而不是讓整份檔案的可信度看起來一樣齊頭平等。
+#
+#   1. res.partner.customer_rank 的 module 是 account，不是 base：
+#      https://raw.githubusercontent.com/odoo/odoo/17.0/addons/account/models/partner.py
+#      第 606 行：`customer_rank = fields.Integer(default=0, copy=False)`；
+#      該檔案第 336 行 `_inherit = 'res.partner'`，證實這是 account 模組
+#      掛到 res.partner 上的欄位。
+#   2. res.partner.supplier_rank 的 module 同上，也是 account，不是 base：
+#      https://raw.githubusercontent.com/odoo/odoo/17.0/addons/account/models/partner.py
+#      第 605 行：`supplier_rank = fields.Integer(default=0, copy=False)`。
+#   3. res.partner.credit_limit 的型別確認是 float、module 確認是 account：
+#      https://raw.githubusercontent.com/odoo/odoo/17.0/addons/account/models/partner.py
+#      第 543 行：`credit_limit = fields.Float(...)`。
+#   4. product.template.weight 與 product.template.volume 的型別確認都是
+#      float、module 確認是 product：
+#      https://raw.githubusercontent.com/odoo/odoo/17.0/addons/product/models/product_template.py
+#      第 84 行（weight）與第 87 行（volume），皆為 `fields.Float(...)`。
+#
+# ----------------------------------------------------------------------------
+models:
+  res.partner:
+    description: >-
+      聯絡人／夥伴（客戶、供應商、或兩者皆是）。T100 的客戶主檔、供應商主檔
+      在 Odoo 裡統一對應到這一個模型，用 customer_rank／supplier_rank 與
+      is_company 區分角色與型態。
+    fields:
+      name:
+        type: char
+        required: true
+        module: base
+        help: "夥伴名稱（公司名稱或個人姓名）。"
+      ref:
+        type: char
+        required: false
+        module: base
+        help: "內部參照代碼，通常用來放來源系統（T100）的原始編號以利追溯。"
+      vat:
+        type: char
+        required: false
+        module: base
+        help: "統一編號／稅籍編號。"
+      phone:
+        type: char
+        required: false
+        module: base
+        help: "市話電話號碼。"
+      mobile:
+        type: char
+        required: false
+        module: base
+        help: "行動電話號碼。"
+      email:
+        type: char
+        required: false
+        module: base
+        help: "電子郵件地址。"
+      street:
+        type: char
+        required: false
+        module: base
+        help: "地址第一行（street）。"
+      street2:
+        type: char
+        required: false
+        module: base
+        help: "地址第二行（street2），補充用，例如樓層、巷弄。"
+      city:
+        type: char
+        required: false
+        module: base
+        help: "城市。"
+      zip:
+        type: char
+        required: false
+        module: base
+        help: "郵遞區號。"
+      active:
+        type: boolean
+        required: false
+        module: base
+        help: "是否為有效（未封存）的夥伴；封存的夥伴預設不會出現在大多數畫面上。"
+      comment:
+        type: text
+        required: false
+        module: base
+        help: "自由格式的備註內文。"
+      credit_limit:
+        type: float
+        required: false
+        module: account
+        help: >-
+          信用額度上限。只有安裝 account 模組後 res.partner 才會有這個欄位，
+          一個沒裝 account 的 Odoo 上不存在。
+      is_company:
+        type: boolean
+        required: false
+        module: base
+        help: "true 表示這是公司（組織），false 表示這是個人聯絡人。"
+      customer_rank:
+        type: integer
+        required: false
+        module: account
+        help: >-
+          客戶身分的強度分數，數值越高代表越常被當成銷售對象；大於 0 通常
+          代表這是一個客戶。這個欄位是 account 模組加到 res.partner 上的，
+          不是 base 就有的（見檔頭「已對照原始碼核實」一節）。
+      supplier_rank:
+        type: integer
+        required: false
+        module: account
+        help: >-
+          供應商身分的強度分數，數值越高代表越常被當成採購對象；大於 0
+          通常代表這是一個供應商。這個欄位是 account 模組加到 res.partner
+          上的，不是 base 就有的（見檔頭「已對照原始碼核實」一節）。
+
+  product.template:
+    description: >-
+      產品（樣板層級，不分變體）。T100 的品號主檔對應到這個模型；若品號沒有
+      規格變體（no variant），product.template 與 product.product 是一對一的。
+    fields:
+      name:
+        type: char
+        required: true
+        module: product
+        help: "產品名稱。"
+      default_code:
+        type: char
+        required: false
+        module: product
+        help: "內部品號／料號，通常放來源系統（T100）的原始品號。"
+      barcode:
+        type: char
+        required: false
+        module: product
+        help: "條碼（EAN/UPC 等）。"
+      list_price:
+        type: float
+        required: false
+        module: product
+        help: "建議售價（銷售基準價）。"
+      standard_price:
+        type: float
+        required: false
+        module: product
+        help: "成本價（用於毛利計算等內部用途）。"
+      uom_id:
+        type: many2one
+        required: false
+        module: product
+        help: "銷售／庫存計量單位，指向 uom.uom。"
+      uom_po_id:
+        type: many2one
+        required: false
+        module: product
+        help: "採購計量單位，指向 uom.uom；可能與 uom_id 不同（例如採購以箱、銷售以個）。"
+      type:
+        type: selection
+        required: false
+        module: product
+        help: >-
+          產品型態（例如服務、消耗品等）；決定是否追蹤庫存與相關的可選欄位
+          會不會出現。
+      active:
+        type: boolean
+        required: false
+        module: product
+        help: "是否為有效（未封存）的產品。"
+      description:
+        type: text
+        required: false
+        module: product
+        help: "內部說明備註（非對客戶顯示的銷售說明）。"
+      weight:
+        type: float
+        required: false
+        module: product
+        help: "單位重量，用於物流／運費估算。"
+      volume:
+        type: float
+        required: false
+        module: product
+        help: "單位體積，用於物流／運費估算。"
+
+  sale.order:
+    description: >-
+      銷售訂單單頭。T100 的銷貨訂單主檔對應到這個模型，明細行在
+      sale.order.line。
+    fields:
+      name:
+        type: char
+        required: true
+        module: sale
+        help: "訂單編號（Odoo 內部單號，通常自動編號）。"
+      partner_id:
+        type: many2one
+        required: true
+        module: sale
+        help: "下單客戶，指向 res.partner。"
+      date_order:
+        type: datetime
+        required: false
+        module: sale
+        help: "訂單建立／確認的日期時間。"
+      state:
+        type: selection
+        required: false
+        module: sale
+        help: "訂單狀態（例如草稿、已確認、已取消）。"
+      amount_total:
+        type: monetary
+        required: false
+        module: sale
+        help: "訂單含稅總金額。"
+      client_order_ref:
+        type: char
+        required: false
+        module: sale
+        help: "客戶自己的訂單編號（客戶端參照），用於單據對帳。"
+      note:
+        type: text
+        required: false
+        module: sale
+        help: "訂單備註。"
+
+  sale.order.line:
+    description: "銷售訂單明細行，隸屬於某一張 sale.order。"
+    fields:
+      order_id:
+        type: many2one
+        required: true
+        module: sale
+        help: "所屬的銷售訂單，指向 sale.order。"
+      product_id:
+        type: many2one
+        required: true
+        module: sale
+        help: "此明細行的產品，指向 product.product。"
+      name:
+        type: text
+        required: true
+        module: sale
+        help: "此明細行顯示的說明文字（通常預設帶入產品名稱，可人工覆寫）。"
+      product_uom_qty:
+        type: float
+        required: false
+        module: sale
+        help: "訂購數量（以 product_uom_id 為單位）。"
+      price_unit:
+        type: float
+        required: false
+        module: sale
+        help: "單價。"
+      discount:
+        type: float
+        required: false
+        module: sale
+        help: "折扣百分比。"
+      price_subtotal:
+        type: monetary
+        required: false
+        module: sale
+        help: "此明細行未稅小計金額。"

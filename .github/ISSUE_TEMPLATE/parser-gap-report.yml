@@ -1,0 +1,46 @@
+name: Parser 落差回報
+description: 回報 migrai scan 解析不了的 Genero 4GL 語法
+title: "[parser-gap] "
+labels:
+  - parser-gap
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感謝你回報 parser 落差！這是貢獻點②的入口：自由格式的 issue 是聊天記錄，
+        結構化表單是資料——累積的回報會成為有欄位可統計的語法落差圖譜。
+
+        **請先去識別化，不要貼客戶專有的表名、欄位名或業務邏輯。**
+  - type: input
+    id: genero-version
+    attributes:
+      label: Genero／T100 版本
+      description: 你手上的 Genero BDL 或 T100 環境版本
+      placeholder: 例如 4.10.10
+    validations:
+      required: true
+  - type: textarea
+    id: failing-snippet
+    attributes:
+      label: 失敗的語法片段
+      description: |
+        請去識別化，不要貼客戶專有邏輯——換掉表名、欄位名、任何業務命名，
+        只留下讓語法失敗的最小結構。
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: scan-error
+    attributes:
+      label: scan 的錯誤訊息與 E- 碼
+      description: 貼上 migrai scan 實際印出的錯誤訊息（含 UnsupportedSyntax 的 E- 碼）
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 確認事項
+      options:
+        - label: 我確認貼出的片段不含客戶機密
+          required: true

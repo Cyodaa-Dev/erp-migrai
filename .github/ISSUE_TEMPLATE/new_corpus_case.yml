@@ -1,0 +1,39 @@
+name: 新增 corpus case
+description: 提議一筆新的合成語料，示範某種語法型態
+title: "[corpus] "
+labels:
+  - corpus
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感謝你願意貢獻新的 corpus case！這是貢獻點①的入口。**所有語料都必須
+        是你自己依公開語法規格重新寫出來的合成語料，不得改寫或貼入任何真實
+        客戶專案裡看到的原始碼、表名、欄位名或業務邏輯。**
+
+        建立步驟見 [CONTRIBUTING.md](https://github.com/Cyodaa-Dev/erp-migrai/blob/main/CONTRIBUTING.md#-新增一筆-corpus-case)。
+  - type: input
+    id: case-name
+    attributes:
+      label: case 名稱
+      description: 例如 case02_invoice
+      placeholder: caseNN_主題
+    validations:
+      required: true
+  - type: textarea
+    id: syntax-pattern
+    attributes:
+      label: 這個 case 示範的語法型態
+      description: 說明這筆語料想涵蓋哪一種 Genero 4GL 語法或情境，以及目前 corpus 裡為什麼還沒有
+      render: text
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 確認事項
+      options:
+        - label: 這份語料是我自己合成的，不是真實客戶資料
+          required: true
+        - label: 已跑過 make update-golden 並人工審閱 golden
+          required: false

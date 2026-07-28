@@ -1,0 +1,35 @@
+# 映射規則：T100 客戶主檔 → Odoo res.partner
+#
+# 【貢獻點③】要讓 migrai 認得你環境裡的欄位，在 rules/ 加一個這樣的檔案就好，
+# 不需要改任何 Python。規則是人類知識，命中規則的對應可信度直接是 100。
+#
+# 檔名不影響行為，只是給人看的分類。載入器會讀 rules/ 底下所有 *.yaml／*.yml。
+version: 1
+
+tables:
+  cust_mast:
+    target_model: res.partner
+
+columns:
+  cust_mast.cust_no:
+    target: res.partner.ref
+  cust_mast.cust_name:
+    target: res.partner.name
+  cust_mast.cust_ubn:
+    target: res.partner.vat
+  cust_mast.cust_tel:
+    target: res.partner.phone
+  cust_mast.cust_addr:
+    target: res.partner.street
+  cust_mast.cust_credit:
+    target: res.partner.credit_limit
+  # T100 用 CHAR(1) 的 Y/N 表示啟用狀態，Odoo 的 active 是 boolean，
+  # 所以這一筆需要值轉換——這正是 transform 存在的理由。
+  cust_mast.cust_stus:
+    target: res.partner.active
+    transform:
+      kind: value_map
+      map:
+        "Y": true
+        "N": false
+      default: true

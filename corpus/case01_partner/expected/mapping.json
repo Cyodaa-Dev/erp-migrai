@@ -1,0 +1,191 @@
+{
+  "schema_version": "1.0",
+  "inventory_synthetic": true,
+  "stats": {
+    "source_columns": 7,
+    "mapped_columns": 7,
+    "coverage_percent": 100,
+    "auto": 7,
+    "suggested": 0,
+    "needs_human": 0
+  },
+  "models": [
+    {
+      "source_table": "cust_mast",
+      "target_model": "res.partner",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：res_partner.yaml#cust_mast"
+      ]
+    }
+  ],
+  "mappings": [
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_addr",
+        "type": "VARCHAR(120)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "street",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_addr"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_credit",
+        "type": "DECIMAL(15,2)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "credit_limit",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_credit"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_name",
+        "type": "VARCHAR(60)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "name",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_name"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_no",
+        "type": "CHAR(10)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "ref",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_stus",
+        "type": "CHAR(1)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "active",
+        "type": "boolean"
+      },
+      "transform": {
+        "kind": "value_map",
+        "value_map": {
+          "Y": true,
+          "N": false
+        },
+        "default": true,
+        "value": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_stus"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_tel",
+        "type": "VARCHAR(20)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "phone",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_tel"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_ubn",
+        "type": "CHAR(8)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "vat",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_ubn"
+      ]
+    }
+  ],
+  "unmapped": [],
+  "conflicts": []
+}

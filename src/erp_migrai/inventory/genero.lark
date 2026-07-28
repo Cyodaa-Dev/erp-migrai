@@ -1,0 +1,62 @@
+// genero.lark — Genero 4GL 宣告語句文法
+//
+// 【貢獻點②】要讓 migrai 認得更多語法，在這裡加規則，並在 corpus 補一個 case。
+//
+// 目前範圍刻意只有 DEFINE 宣告。理由：scan 需要的是「有哪些表、哪些程式、
+// 哪些 SQL、哪些語法我不會」，宣告的型別結構有分析價值，而控制流程與 UI 語句
+// 對盤點沒有增量資訊——模組四（程式碼轉換）不在 MVP 範圍，不需要完整 AST。
+// 控制流程與 UI 關鍵字由 parser.py 的 KNOWN_IGNORED 認得但不解析。
+//
+// 這個文法完全不處理註解：呼叫端（parser.py）一律先把 blocks.py／masking.py
+// 產生的遮罩後文字組成語句再交進來，註解與字串常值內容早已被換成空白，
+// 因此這裡不需要、也刻意不定義任何註解相關的終端或 %ignore 規則。
+//
+// 已知缺口（歡迎 PR）：
+//   - 一句 DEFINE 只支援一種型別：`DEFINE a, b INTEGER` 可以，
+//     `DEFINE a INTEGER, b CHAR(10)` 不行（會回報 E-1002）。
+//   - 不支援 DYNAMIC ARRAY、不支援 TYPE 自訂型別。
+//
+// 底線開頭的終端會被 Lark 從語法樹濾除，讓 Transformer 的 children 保持乾淨。
+
+start: define_stmt
+
+define_stmt: _DEFINE name_list type_ref
+
+name_list: NAME (_COMMA NAME)*
+
+type_ref: record_like
+        | like_ref
+        | record_inline
+        | array_type
+        | simple_type
+
+record_like:   _RECORD _LIKE qualified
+like_ref:      _LIKE qualified
+record_inline: _RECORD field_decl (_COMMA field_decl)* _END _RECORD
+array_type:    _ARRAY _LSQB INT _RSQB _OF type_ref
+simple_type:   NAME (_LPAR INT (_COMMA INT)? _RPAR)?
+
+field_decl: NAME type_ref
+
+qualified: NAME _DOT (NAME | STAR)
+
+_DEFINE.9: /(?i:define)\b/
+_RECORD.9: /(?i:record)\b/
+_LIKE.9:   /(?i:like)\b/
+_ARRAY.9:  /(?i:array)\b/
+_OF.9:     /(?i:of)\b/
+_END.9:    /(?i:end)\b/
+
+STAR: "*"
+_LPAR: "("
+_RPAR: ")"
+_LSQB: "["
+_RSQB: "]"
+_COMMA: ","
+_DOT: "."
+
+NAME: /[A-Za-z_][A-Za-z0-9_]*/
+
+%import common.INT
+%import common.WS
+%ignore WS

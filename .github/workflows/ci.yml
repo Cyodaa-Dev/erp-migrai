@@ -1,0 +1,222 @@
+# CI：lint／test／build／dco 四個獨立 job。
+#
+# 指令選擇原則：`lint` 與 `test` job 呼叫的是 `make lint`／`make test`，
+# 不是拆開寫的 `uv run ruff …`／`uv run pytest …`——CONTRIBUTING.md 已經
+# 承諾「送 PR 前確認 make lint 與 make test 都是綠的；CI 設定完成後會用
+# 同一組指令驗證」，指令一旦分岔，那句承諾就變成假的。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 只保留每個 ref 上最新的一次 run：PR 連續推送時，被取代的 run 沒有必要
+# 跑到完，白燒 runner 分鐘數。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小權限：四個 job 都只需要 checkout 原始碼，不需要寫入 repo 或呼叫其他
+# API。repo／org 層級的預設值可能比這寬，這裡明確釘住，不依賴 UI 設定。
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 取得原始碼
+        uses: actions/checkout@v4
+
+      - name: 安裝 uv（含快取）
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: 安裝開發環境
+        run: uv sync --locked
+
+      - name: make lint（ruff check + ruff format --check）
+        run: make lint
+
+  test:
+    name: test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 是 pyproject.toml 宣告的下限；3.13 用來提早抓向前相容問題。
+        python-version: ["3.12", "3.13"]
+    steps:
+      - name: 取得原始碼
+        uses: actions/checkout@v4
+
+      - name: 安裝 uv（含快取，並指定 Python 版本）
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安裝開發環境
+        run: uv sync --locked
+
+      - name: make test（單元 + golden，跳過 integration marker）
+        run: make test
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 取得原始碼
+        uses: actions/checkout@v4
+
+      - name: 安裝 uv（含快取）
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: 建置 wheel 與 sdist
+        run: uv build -o dist
+
+      # pytest 碰不到這種缺陷：資料檔（YAML/JSON/README）沒被打包進 wheel，
+      # 本機單元測試全綠，但 `pip install` 之後執行期才會找不到檔案而炸掉。
+      # 因此直接對建出來的 wheel 用 zipfile 讀內容來斷言——本機沒有 unzip。
+      # `--no-project` 讓這段只用標準函式庫（glob／zipfile），不觸發專案的
+      # 相依解析：這樣「相依解析失敗」與「wheel 內容斷言失敗」是兩種不同的
+      # 紅燈，不會把前者誤判成後者。
+      - name: 驗證 wheel 內容含資料檔與授權檔
+        run: |
+          uv run --no-project python - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          assert wheels, "找不到任何 .whl 檔"
+          names = zipfile.ZipFile(wheels[0]).namelist()
+
+          required = [
+              "erp_migrai/mapping/odoo17_catalog.yaml",
+              "erp_migrai/mapping/rules/res_partner.yaml",
+              "erp_migrai/mapping/rules/README.md",
+              "erp_migrai/mapping/schema/mapping.schema.json",
+          ]
+          missing = [r for r in required if r not in names]
+          assert not missing, f"wheel 缺少：{missing}"
+
+          # 授權檔路徑含版本號（例如 erp_migrai-0.0.1.dist-info/...），
+          # 版本一升路徑就變，因此用結尾比對而非寫死完整路徑。
+          assert any(n.endswith(".dist-info/licenses/LICENSE") for n in names), (
+              "wheel 缺少 LICENSE（應在 *.dist-info/licenses/ 底下）"
+          )
+          assert any(n.endswith(".dist-info/licenses/NOTICE") for n in names), (
+              "wheel 缺少 NOTICE（應在 *.dist-info/licenses/ 底下，"
+              "Apache-2.0 §4(d) 要求再散布時附上）"
+          )
+
+          print("wheel 內容確認 OK")
+          PY
+
+      # sdist 打包的是「進 git 的檔案」，跟 wheel 是完全不同的打包路徑，
+      # 上面驗 wheel 內容的斷言完全罩不到它。hatchling 組 sdist 時讀的是
+      # repo 根目錄的 `.gitignore`：任何沒被那份 `.gitignore` 擋掉的本機
+      # 檔案（例如 agent 工具的本機設定）都會原封不動地跟著 sdist 出貨、
+      # 上 PyPI。這裡直接對建出來的 sdist 用 tarfile 讀內容來斷言。
+      - name: 驗證 sdist 不含不該出貨的路徑
+        run: |
+          uv run --no-project python - <<'PY'
+          import glob
+          import tarfile
+
+          sdists = glob.glob("dist/*.tar.gz")
+          assert sdists, "找不到任何 .tar.gz"
+          names = tarfile.open(sdists[0]).getnames()
+
+          forbidden_substrings = [".claude/", "_local/", "/out/", ".superpowers/", "data.sqlite"]
+          offenders = [n for n in names if any(f in n for f in forbidden_substrings)]
+          assert not offenders, f"sdist 含有不該出貨的路徑：{offenders}"
+
+          print(f"sdist 內容確認 OK（{len(names)} 個項目，無不該出貨的路徑）")
+          PY
+
+  dco:
+    name: dco
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # 只在 pull_request 情境執行。DCO 的把關點是「合併前」：PR 上的這個 job
+    # 已經涵蓋這個 PR 帶進來的每一個 commit。push 到 main 時無法可靠比對：
+    # squash／merge 落地到 main 的那個 commit 是 GitHub 合成出來的，即使
+    # 原始 PR 裡每個 commit 都簽署過，落地 commit 本身也未必帶
+    # `Signed-off-by`——重新對它做這項檢查只會製造與貢獻是否合規無關的
+    # 假失敗。
+    # 因此 push 事件下這個 job 直接不執行（GitHub 視為成功，不會擋 push）；
+    # 真正的把關發生在 merge 之前的 pull_request 檢查上。
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: 取得完整 commit 歷史
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 檢查這個 PR 帶進來的每個 commit 都有 Signed-off-by
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          echo "檢查範圍：${base}..${head}"
+
+          # 一定要先收進變數再判斷：`for x in $(cmd)` 這種寫法裡，bash 會
+          # 丟棄命令替換的退出碼，`set -e` 完全抓不到——base／head 任一個
+          # SHA 因為 force-push／rebase 而不存在時，`git rev-list` 會失敗、
+          # 印一行 fatal 到 stderr，但迴圈仍會照跑零次、腳本正常退出 0，
+          # 亮出一個什麼都沒檢查過的綠燈。改成先賦值給變數，`set -e` 才會
+          # 在指令替換失敗時如預期中止腳本。
+          shas="$(git rev-list --no-merges "${base}..${head}")"
+
+          # 上面那行躲得掉「指令失敗」，躲不掉「指令成功但解析出零個
+          # commit」（例如這個範圍合法地全是 merge commit，被 --no-merges
+          # 濾光）。零個 commit 代表這個 job 什麼都沒檢查到，必須視為失敗，
+          # 而不是預設通過。
+          if [ -z "$shas" ]; then
+            echo "::error::DCO 檢查未取得任何 commit（範圍 ${base}..${head}）"
+            exit 1
+          fi
+
+          # 刻意不寫成 `git log … | grep -q`：`set -o pipefail` 之下，訊息大於
+          # 管線緩衝區（預設 64 KB）時 grep 會在比對成功後立刻結束，git 收到
+          # SIGPIPE 而以 141 退出，pipefail 讓整個 pipeline 的退出碼變成 141，
+          # 於是一個**確實簽署過**的 commit 會被判定為未簽署，擋掉合法的貢獻。
+          # 本機用 20 萬字元的訊息實測重現過。改成先取訊息、再用 here-string
+          # 比對，沒有上游行程可以被 SIGPIPE 打斷。
+          missing=0
+          for sha in $shas; do
+            message="$(git log -1 --format=%B "$sha")"
+            if ! grep -qi '^Signed-off-by: ' <<<"$message"; then
+              echo "::error::commit ${sha} 缺少 Signed-off-by（違反 DCO）"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -eq 1 ]; then
+            echo "有 commit 缺少 Signed-off-by。"
+            echo "請用 'git commit -s --amend' 補簽最後一個 commit，"
+            echo "或 'git rebase --signoff ${base}' 補簽整段 PR 歷史後再推送。"
+            exit 1
+          fi
+
+          echo "所有 commit 都已簽署 DCO。"
+
+# ---- integration job 留位 ----
+#
+# 載入階段與驗證階段完成後，在此新增一個 `integration` job：
+# 用 GitHub Actions 的 service container 起 Odoo 17 CE 與 PostgreSQL，
+# 對 corpus 語料跑一次涵蓋 scan、map、載入、驗證的完整管線，確認產物
+# 真的能匯入 Odoo，而不只是通過單元測試。
+#
+# 現在不寫這個 job——載入階段與驗證階段還不存在，沒有東西可以 integrate。

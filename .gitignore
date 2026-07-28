@@ -1,0 +1,26 @@
+# 本機工作目錄，不進版本控制
+_local/
+
+# 開發文件正本放在 _local/docs/superpowers/。此處保留一道防線——
+# 寫計劃的工具預設會寫到這個路徑。
+docs/superpowers/
+
+# 本機 agent 工具設定，因環境而異，不應出貨或進版本控制
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# 執行產出
+out/
+*.sqlite-journal
+# corpus 的 sqlite 由 seed.sql 生成，不進 git（二進位檔無法在 PR 中審閱）
+corpus/**/data.sqlite
+
+# superpowers 的執行暫存（進度帳本、任務摘要、review 套件）
+.superpowers/

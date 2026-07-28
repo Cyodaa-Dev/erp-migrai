@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cyodaa-Dev/erp-migrai/schema/mapping-1.0.json",
+  "title": "ERP MIGRAI mapping",
+  "description": "migrai map 的產出。這是對下游（含商業版 consumer）承諾的公開格式，破壞相容性必須升版 schema_version。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "inventory_synthetic",
+    "models",
+    "mappings",
+    "unmapped",
+    "conflicts",
+    "stats"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "inventory_synthetic": {
+      "type": "boolean",
+      "description": "上游 inventory 是否為合成語料，一路傳下去、不在中途消失"
+    },
+    "models": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/model_mapping" }
+    },
+    "mappings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/field_mapping" }
+    },
+    "unmapped": {
+      "type": "array",
+      "description": "來源有、對不上目標的欄位。這是盤點結果，不是錯誤清單。",
+      "items": { "$ref": "#/$defs/unmapped_column" }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mapping_conflict" }
+    },
+    "stats": { "$ref": "#/$defs/mapping_stats" }
+  },
+  "$defs": {
+    "tier": {
+      "type": "string",
+      "enum": ["auto", "suggested", "needs_human"]
+    },
+    "conflict_kind": {
+      "type": "string",
+      "description": "區分 mapping_conflict 是表級還是欄位級：`table` 時 column 為 null、candidates 是模型名稱清單；`column` 時 column 是實際來源欄位、candidates 是「模型.欄位」字串清單。",
+      "enum": ["table", "column"]
+    },
+    "confidence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "reasons": {
+      "type": "array",
+      "description": "為什麼是這個分數。這是人工審核的唯一依據，不得為空。",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value_map", "default", "value"],
+      "description": "值的轉換方式，只有三種 kind。value_map／default／value 皆允許為 null——每個欄位只有某一種 kind 會用到對應的值，這裡刻意只表達型別、不做「依 kind 而定」的條件式必填檢查；『value_map 必須有 map、constant 必須有 value』這種跨欄位規則留給後續任務的 rules_loader 在載入時檢查，schema 保持簡單。",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["identity", "value_map", "constant"]
+        },
+        "value_map": {
+          "type": ["object", "null"]
+        },
+        "default": {},
+        "value": {}
+      }
+    },
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table", "column", "type"],
+      "properties": {
+        "table": { "type": "string" },
+        "column": { "type": "string" },
+        "type": { "type": "string" }
+      }
+    },
+    "target_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "field", "type"],
+      "properties": {
+        "model": { "type": "string" },
+        "field": { "type": "string" },
+        "type": { "type": "string" }
+      }
+    },
+    "field_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "transform", "confidence", "tier", "reasons"],
+      "properties": {
+        "source": { "$ref": "#/$defs/source_ref" },
+        "target": { "$ref": "#/$defs/target_ref" },
+        "transform": { "$ref": "#/$defs/transform" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "tier": { "$ref": "#/$defs/tier" },
+        "reasons": { "$ref": "#/$defs/reasons" }
+      }
+    },
+    "unmapped_column": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table", "column", "type", "reason"],
+      "properties": {
+        "table": { "type": "string" },
+        "column": { "type": "string" },
+        "type": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "mapping_conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table", "column", "kind", "candidates", "reason"],
+      "description": "來源表或來源欄位對不上目標時的衝突紀錄。`kind` 決定 `column`／`candidates` 的意義：`kind == \"table\"` 時這是整張表對不上模型（或對到多個並列的模型），`column` 為 `null`，`candidates` 是互相並列的 Odoo **模型名稱**清單；`kind == \"column\"` 時表已經對到模型、但某個欄位對不上目標欄位，`column` 是實際的來源欄位名稱，`candidates` 是「`模型.欄位`」字串清單。",
+      "properties": {
+        "table": { "type": "string" },
+        "column": {
+          "type": ["string", "null"],
+          "description": "來源欄位名稱；`kind == \"table\"` 時為 `null`——這是表級衝突，不對應任何單一來源欄位。"
+        },
+        "kind": { "$ref": "#/$defs/conflict_kind" },
+        "candidates": { "type": "array", "items": { "type": "string" } },
+        "reason": { "type": "string" }
+      }
+    },
+    "model_mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_table", "target_model", "confidence", "tier", "reasons"],
+      "properties": {
+        "source_table": { "type": "string" },
+        "target_model": { "type": "string" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "tier": { "$ref": "#/$defs/tier" },
+        "reasons": { "$ref": "#/$defs/reasons" }
+      }
+    },
+    "mapping_stats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_columns",
+        "mapped_columns",
+        "coverage_percent",
+        "auto",
+        "suggested",
+        "needs_human"
+      ],
+      "properties": {
+        "source_columns": { "type": "integer", "minimum": 0 },
+        "mapped_columns": { "type": "integer", "minimum": 0 },
+        "coverage_percent": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "auto": { "type": "integer", "minimum": 0 },
+        "suggested": { "type": "integer", "minimum": 0 },
+        "needs_human": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

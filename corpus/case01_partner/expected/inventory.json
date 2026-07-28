@@ -1,0 +1,206 @@
+{
+  "synthetic": true,
+  "schema_version": "1.0",
+  "database": "ds",
+  "source_files": [
+    "cust_maintain.4gl",
+    "schema.sql"
+  ],
+  "tables": [
+    {
+      "name": "cust_mast",
+      "columns": [
+        {
+          "name": "cust_no",
+          "type": "CHAR(10)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "cust_name",
+          "type": "VARCHAR(60)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "cust_ubn",
+          "type": "CHAR(8)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "cust_tel",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "cust_addr",
+          "type": "VARCHAR(120)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "cust_credit",
+          "type": "DECIMAL(15,2)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "cust_stus",
+          "type": "CHAR(1)",
+          "nullable": true,
+          "default": "Y"
+        }
+      ],
+      "primary_key": [
+        "cust_no"
+      ],
+      "foreign_keys": []
+    }
+  ],
+  "programs": [
+    {
+      "kind": "GLOBALS",
+      "name": null,
+      "file": "cust_maintain.4gl",
+      "start_line": 6,
+      "end_line": 8,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "g_user",
+          "type": "CHAR(10)",
+          "line": 7
+        }
+      ],
+      "sql": [],
+      "unsupported": []
+    },
+    {
+      "kind": "MAIN",
+      "name": null,
+      "file": "cust_maintain.4gl",
+      "start_line": 10,
+      "end_line": 13,
+      "parse_status": "ok",
+      "definitions": [],
+      "sql": [],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "cust_maintain",
+      "file": "cust_maintain.4gl",
+      "start_line": 15,
+      "end_line": 30,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "l_cnt",
+          "type": "INTEGER",
+          "line": 16
+        }
+      ],
+      "sql": [
+        {
+          "kind": "SELECT",
+          "tables": [
+            "cust_mast"
+          ],
+          "line": 18
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "cust_insert",
+      "file": "cust_maintain.4gl",
+      "start_line": 32,
+      "end_line": 38,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "p_cust",
+          "type": "RECORD LIKE cust_mast.*",
+          "line": 33
+        }
+      ],
+      "sql": [
+        {
+          "kind": "INSERT",
+          "tables": [
+            "cust_mast"
+          ],
+          "line": 37
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "cust_update",
+      "file": "cust_maintain.4gl",
+      "start_line": 40,
+      "end_line": 51,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "p_no",
+          "type": "LIKE cust_mast.cust_no",
+          "line": 41
+        },
+        {
+          "name": "p_cust",
+          "type": "RECORD LIKE cust_mast.*",
+          "line": 42
+        }
+      ],
+      "sql": [
+        {
+          "kind": "SELECT",
+          "tables": [
+            "cust_mast"
+          ],
+          "line": 44
+        },
+        {
+          "kind": "UPDATE",
+          "tables": [
+            "cust_mast"
+          ],
+          "line": 50
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "cust_delete",
+      "file": "cust_maintain.4gl",
+      "start_line": 53,
+      "end_line": 57,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "p_no",
+          "type": "LIKE cust_mast.cust_no",
+          "line": 54
+        }
+      ],
+      "sql": [
+        {
+          "kind": "DELETE",
+          "tables": [
+            "cust_mast"
+          ],
+          "line": 56
+        }
+      ],
+      "unsupported": []
+    }
+  ],
+  "unsupported_syntax": [],
+  "database_conflicts": []
+}

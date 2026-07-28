@@ -1,0 +1,44 @@
+name: 一般錯誤回報
+description: 回報 migrai scan／map 以外的錯誤，例如安裝、CLI 行為或文件問題
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感謝你回報問題。若是 `migrai scan` 解析不了的語法，請改用
+        [Parser 落差回報](https://github.com/Cyodaa-Dev/erp-migrai/issues/new?template=parser-gap-report.yml)
+        表單，欄位更貼合那種情境。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 發生了什麼
+      description: 描述你遇到的問題，以及你原本預期的行為
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce-steps
+    attributes:
+      label: 重現步驟
+      description: 從哪個指令開始，一步一步列出如何重現
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本資訊
+      description: erp-migrai 版本、Python 版本、作業系統
+      placeholder: 例如 erp-migrai 0.0.1 / Python 3.12 / Ubuntu 22.04
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相關輸出或錯誤訊息
+      description: 貼上完整的錯誤訊息或終端機輸出（請去識別化，不要貼客戶資料）
+      render: text
+    validations:
+      required: false

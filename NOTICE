@@ -1,0 +1,31 @@
+ERP MIGRAI
+Copyright 2026 Cyodaa
+
+本產品之程式碼採 Apache License, Version 2.0 授權，授權全文見同目錄的 LICENSE。
+
+商標與品牌名稱
+--------------
+「ERP MIGRAI」為 Cyodaa 之品牌名稱。
+依 Apache License 2.0 第 6 條，本授權不授予商標、服務標記或品牌名稱之使用權。
+程式碼可依授權自由使用、修改與散布（包含商業使用）；但若要以「ERP MIGRAI」
+名義發布衍生作品或提供服務，需另行取得許可。
+
+語料庫
+------
+corpus/ 目錄下的所有 Genero 4GL 程式與 SQL 皆為合成語料，依 Four Js Genero BDL
+之公開語法規格自行撰寫，並以各 case 的 src/SYNTHETIC 標記檔聲明。
+不含任何客戶之真實程式碼，亦不含鼎新（Digiwin）之專有資訊。
+
+
+Trademarks (English summary)
+----------------------------
+"ERP MIGRAI" is a brand name of Cyodaa. Under Section 6 of the Apache License 2.0,
+this license does not grant permission to use the trade names, trademarks, service
+marks, or product names of the licensor. The source code may be used, modified, and
+redistributed under the license, including commercially; publishing a derivative work
+or offering a service under the "ERP MIGRAI" name requires separate permission.
+
+All Genero 4GL programs and SQL files under corpus/ are synthetic, authored from the
+public Four Js Genero BDL grammar specification and marked as such by each case's
+src/SYNTHETIC file. They contain no real customer source code and no proprietary
+information of Digiwin.

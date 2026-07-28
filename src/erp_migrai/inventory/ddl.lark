@@ -1,0 +1,68 @@
+// ddl.lark — CREATE TABLE 子集文法
+//
+// 只涵蓋 scan 需要的結構：欄位、型別、NOT NULL／DEFAULT、PRIMARY KEY、FOREIGN KEY。
+// 其餘 DDL（CREATE INDEX、ALTER TABLE、CREATE VIEW…）由 ddl.py 記錄為不支援，
+// 不會導致整份 schema.sql 解析失敗。
+//
+// 已知限制：欄位名不得與本文法的保留關鍵字同名
+// （CREATE／TABLE／PRIMARY／FOREIGN／KEY／REFERENCES／NOT／NULL／DEFAULT）。
+// 底線開頭的終端會被 Lark 從語法樹中濾除，讓 Transformer 的 children 保持乾淨。
+// 已知限制：ddl.py 的字元級掃描器把 SQL 慣例的 '' 或 "" 視為字串常值內一個逸出的
+// 單引號／雙引號（因此能正確切出語句邊界），但這裡的 SQ_STRING: /'[^']*'/ 與
+// DQ_STRING: /"[^"]*"/ 本身並不接受內嵌同類引號，所以像 DEFAULT 'it''s ok' 或
+// DEFAULT "she said ""hi""" 這種寫法即使語句切得正確，仍會在這裡的文法解析
+// 階段失敗，被記成 UnsupportedSyntax。
+
+start: create_table
+
+create_table: _CREATE _TABLE table_name _LPAR element (_COMMA element)* _RPAR
+
+element: primary_key
+       | foreign_key
+       | column_def
+
+primary_key: _PRIMARY _KEY _LPAR ident_list _RPAR
+foreign_key: _FOREIGN _KEY _LPAR ident_list _RPAR _REFERENCES table_name _LPAR ident_list _RPAR
+column_def: ident type_spec column_option*
+
+type_spec: ident (_LPAR NUMBER (_COMMA NUMBER)? _RPAR)?
+
+column_option: _NOT _NULL             -> opt_not_null
+             | _NULL                  -> opt_null
+             | _DEFAULT default_val   -> opt_default
+             | _PRIMARY _KEY          -> opt_inline_pk
+
+default_val: NUMBER
+           | SQ_STRING
+           | DQ_STRING
+           | _NULL       -> default_null
+           | ident
+
+ident_list: ident (_COMMA ident)*
+table_name: ident
+ident: NAME
+
+_CREATE.9:     /(?i:create)\b/
+_TABLE.9:      /(?i:table)\b/
+_PRIMARY.9:    /(?i:primary)\b/
+_FOREIGN.9:    /(?i:foreign)\b/
+_KEY.9:        /(?i:key)\b/
+_REFERENCES.9: /(?i:references)\b/
+_NOT.9:        /(?i:not)\b/
+_NULL.9:       /(?i:null)\b/
+_DEFAULT.9:    /(?i:default)\b/
+
+_LPAR: "("
+_RPAR: ")"
+_COMMA: ","
+
+NAME: /[A-Za-z_][A-Za-z0-9_]*/
+SQ_STRING: /'[^']*'/
+DQ_STRING: /"[^"]*"/
+
+// 刻意只定義一個數值終端。若同時 %import common.INT 與 common.SIGNED_NUMBER，
+// 兩者都能匹配 "0"，LALR 會因終端衝突而拒絕載入文法。
+NUMBER: /[+-]?[0-9]+(\.[0-9]+)?/
+
+%import common.WS
+%ignore WS

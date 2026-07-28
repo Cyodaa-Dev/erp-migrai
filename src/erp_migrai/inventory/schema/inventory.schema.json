@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cyodaa-Dev/erp-migrai/schema/inventory-1.0.json",
+  "title": "ERP MIGRAI inventory",
+  "description": "migrai scan 的產出。這是對下游（含商業版 consumer）承諾的公開格式，破壞相容性必須升版 schema_version。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "synthetic",
+    "schema_version",
+    "database",
+    "source_files",
+    "tables",
+    "programs",
+    "unsupported_syntax",
+    "database_conflicts"
+  ],
+  "properties": {
+    "synthetic": {
+      "type": "boolean",
+      "description": "true 表示來源為合成語料，非任何客戶之真實程式碼"
+    },
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "database": { "type": ["string", "null"] },
+    "source_files": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "database_conflicts": {
+      "type": "array",
+      "description": "曾被宣告、但未被 database 欄位採用的其他 DATABASE 名稱（已排序、去重）。additive 欄位，於任何正式版本消費本格式之前新增，不需調高 schema_version。",
+      "items": { "type": "string" }
+    },
+    "tables": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/table" }
+    },
+    "programs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/program" }
+    },
+    "unsupported_syntax": {
+      "type": "array",
+      "description": "本工具無法解析的語法。這是一級產出，不是失敗紀錄。",
+      "items": { "$ref": "#/$defs/unsupported" }
+    }
+  },
+  "$defs": {
+    "unsupported": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "snippet", "reason"],
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "snippet": { "type": "string", "maxLength": 200 },
+        "reason": { "type": "string" }
+      }
+    },
+    "column": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "nullable", "default"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "nullable": { "type": "boolean" },
+        "default": { "type": ["string", "null"] }
+      }
+    },
+    "foreign_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns", "ref_table", "ref_columns"],
+      "properties": {
+        "columns": { "type": "array", "items": { "type": "string" } },
+        "ref_table": { "type": "string" },
+        "ref_columns": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "columns", "primary_key", "foreign_keys"],
+      "properties": {
+        "name": { "type": "string" },
+        "columns": { "type": "array", "items": { "$ref": "#/$defs/column" } },
+        "primary_key": { "type": "array", "items": { "type": "string" } },
+        "foreign_keys": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/foreign_key" }
+        }
+      }
+    },
+    "definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "line"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "sql_statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "tables", "line"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["SELECT", "INSERT", "UPDATE", "DELETE", "DECLARE_CURSOR"]
+        },
+        "tables": { "type": "array", "items": { "type": "string" } },
+        "line": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "program": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "file",
+        "start_line",
+        "end_line",
+        "parse_status",
+        "definitions",
+        "sql",
+        "unsupported"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["MAIN", "FUNCTION", "REPORT", "GLOBALS"]
+        },
+        "name": { "type": ["string", "null"] },
+        "file": { "type": "string" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "parse_status": { "type": "string", "enum": ["ok", "partial", "failed"] },
+        "definitions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/definition" }
+        },
+        "sql": { "type": "array", "items": { "$ref": "#/$defs/sql_statement" } },
+        "unsupported": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/unsupported" }
+        }
+      }
+    }
+  }
+}

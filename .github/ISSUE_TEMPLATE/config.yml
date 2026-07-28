@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 商業版洽詢
+    url: https://github.com/Cyodaa-Dev/erp-migrai/discussions
+    about: 產業模板、客戶規則庫、私有部署與導入顧問請走 Discussions
+  - name: 回報安全漏洞
+    url: https://github.com/Cyodaa-Dev/erp-migrai/security/advisories/new
+    about: 請勿開公開 issue；使用 GitHub 私下漏洞回報
