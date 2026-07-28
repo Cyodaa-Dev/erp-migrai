@@ -231,6 +231,29 @@ def test_make_demo_reports_full_coverage_on_case01(tmp_path):
     assert "auto 7" in output
 
 
+# ANSI 顏色逃脫序列。typer 底下的 rich 是否上色，取決於執行環境而不是我們的
+# 程式碼：本機用 `capture_output=True` 時 stdout 不是終端機，rich 自動關掉顏色；
+# 但 CI runner 上顏色是開的（GitHub Actions 首次跑這份 workflow 時，這裡就因此
+# 整組解析不到子指令而紅燈）。剝掉逃脫序列讓解析在兩種環境下都成立。
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+# typer 的說明畫面把子指令列在 Commands 區塊，每行形如 "│ scan  …"
+_HELP_COMMAND_LINE = re.compile(r"^\s*│\s+([a-z][a-z0-9-]*)\s")
+
+
+def parse_subcommands(help_text: str) -> set[str]:
+    """從 `migrai --help` 的輸出解析出子指令名稱。
+
+    與 `existing_subcommands()` 分開，是為了能對「上了色的說明畫面」直接做
+    回歸測試——那個情形只在 CI 上出現，用真的子行程重現一次成本太高。
+    """
+    return {
+        match.group(1)
+        for line in _ANSI_ESCAPE.sub("", help_text).splitlines()
+        if (match := _HELP_COMMAND_LINE.match(line))
+    }
+
+
 def existing_subcommands() -> set[str]:
     """從 `migrai --help` 動態取得現存子指令。
 
@@ -244,14 +267,29 @@ def existing_subcommands() -> set[str]:
         text=True,
         check=True,
     )
-    # typer 的說明畫面把子指令列在 Commands 區塊，每行形如 "│ scan  …"
-    commands: set[str] = set()
-    for line in result.stdout.splitlines():
-        match = re.match(r"^\s*│\s+([a-z][a-z0-9-]*)\s", line)
-        if match:
-            commands.add(match.group(1))
+    commands = parse_subcommands(result.stdout)
     assert commands, f"沒能從 migrai --help 解析出任何子指令：\n{result.stdout}"
     return commands
+
+
+def test_subcommand_parsing_survives_coloured_help_output():
+    """說明畫面上了色時，子指令仍然解析得出來。
+
+    這條測試來自一個真實的 CI-only 失敗：本機全綠、GitHub runner 上
+    `existing_subcommands()` 解析出空集合。差別只在 rich 有沒有上色——
+    上色後 `│` 後面接的是逃脫序列而不是空白，原本的正規表示式就對不上了。
+    「本機過、CI 不過」的東西必須有一條在本機就會紅的測試守著，否則下一次
+    只能等推上去才發現。
+    """
+    coloured = (
+        "\x1b[2m╭─\x1b[0m\x1b[2m Commands \x1b[0m\x1b[2m──╮\x1b[0m\n"
+        "\x1b[2m│\x1b[0m \x1b[1;36mscan   \x1b[0m 盤點來源程式。 \x1b[2m│\x1b[0m\n"
+        "\x1b[2m│\x1b[0m \x1b[1;36mmap    \x1b[0m 產出 mapping.json。 \x1b[2m│\x1b[0m\n"
+    )
+    assert parse_subcommands(coloured) == {"scan", "map"}
+
+    plain = "│ scan     盤點來源程式。\n│ map      產出 mapping.json。\n"
+    assert parse_subcommands(plain) == {"scan", "map"}
 
 
 def readme_demo_block() -> list[str]:
