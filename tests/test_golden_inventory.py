@@ -164,14 +164,20 @@ def test_case03_references_are_all_rule_declared():
     不該發衝突）；ord_prod_no 的 DDL **刻意沒有**宣告（真實 T100 最常見的
     形狀，只能靠規則補）。兩者都要走得通。
 
-    🔴 Task 4.5 修訂：`conflicts == []` 這條斷言原本成立，是因為 map 階段
-    完全沒有檢查「同一個目標欄位被一個以上的來源欄位對應」——`ord_mast.
-    ord_no`（規則，confidence 100）與 `ord_mast.ord_cust_ref`（啟發式，
-    confidence 30）都對到 `sale.order.client_order_ref`，到了載入階段會
-    互相覆蓋，卻完全不出聲。昴君裁決在 map 階段新增這個檢查（`ConflictKind.
-    TARGET`）之後，case03 的 golden 這裡多出剛好一筆衝突，`conflicts == []`
-    不再成立，改為斷言這一筆衝突的具體內容，不能弱化成「至少有一筆」之類
-    的鬆散斷言。
+    🔴 Task 4.5 修訂：map 階段新增「同一個目標欄位被一個以上的來源欄位對應」
+    的檢查（`ConflictKind.TARGET`）後，第一時間在 `sale_order.yaml` 抓到一個
+    真缺陷——`ord_mast.ord_no`（規則，confidence 100）與 `ord_mast.
+    ord_cust_ref`（啟發式，confidence 30）都對到 `sale.order.
+    client_order_ref`，且配錯了語意：`ord_cust_ref` 才是「客戶自己的訂單
+    編號」，即 catalog 對 `client_order_ref` 的定義；`ord_no` 是 T100 自己
+    的訂單編號，語意上該對到 `sale.order.name`。這一輪修訂把
+    `sale_order.yaml` 改正（`ord_cust_ref → client_order_ref`、
+    `ord_no → name`），衝突的根源消失，`conflicts` 因此變回 `[]`——
+    這是檢查機制運作正常的結果（抓到真缺陷、缺陷被修掉），不是檢查被弱化。
+    檢查機制本身仍然活著，由 `tests/mapping/test_engine.py` 的
+    `test_two_source_columns_ruled_to_same_target_field_produce_target_conflict`
+    與 `test_target_conflict_spans_auto_and_needs_human_tiers_like_case03`
+    守著（兩條都用自訂 `RuleSet` 構造衝突情境，不依賴這份語料）。
     """
     mapping = json.loads(
         (CORPUS_ROOT / "case03_sales_order" / "expected" / "mapping.json").read_text(
@@ -190,13 +196,16 @@ def test_case03_references_are_all_rule_declared():
     assert prod_ref["ref_table"] == "prod_mast"
     assert prod_ref["ref_column"] == "prod_no"
 
-    assert len(mapping["conflicts"]) == 1
-    conflict = mapping["conflicts"][0]
-    assert conflict["table"] == "ord_mast"
-    assert conflict["column"] is None
-    assert conflict["kind"] == "target"
-    assert conflict["candidates"] == ["ord_cust_ref", "ord_no"]
-    assert "sale.order.client_order_ref" in conflict["reason"]
+    assert mapping["conflicts"] == []
+
+    ord_no_mapping = by_source[("ord_mast", "ord_no")]
+    assert ord_no_mapping["target"]["field"] == "name"
+    assert ord_no_mapping["tier"] == "auto"
+
+    ord_cust_ref_mapping = by_source[("ord_mast", "ord_cust_ref")]
+    assert ord_cust_ref_mapping["target"]["field"] == "client_order_ref"
+    assert ord_cust_ref_mapping["tier"] == "auto"
+    assert ord_cust_ref_mapping["confidence"] == 100
 
 
 def test_case03_reports_unsupported_syntax_but_data_tables_are_complete():

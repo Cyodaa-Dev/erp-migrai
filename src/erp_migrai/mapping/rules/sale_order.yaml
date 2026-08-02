@@ -51,13 +51,30 @@ columns:
   # 的欄位」——這是誠實的「目前沒有地方放」，不是遺漏。
 
   # --- ord_mast → sale.order -------------------------------------------------
-  # sale.order.name 是 required=True 且有 default（Odoo 自動編號)。
-  # ord_mast.ord_no 要不要覆寫 name，牽涉到「Odoo 會不會覆寫自動編號」，
-  # 這一點留待載入階段以 CI 實測確認（見案例 README.md）。本任務先把
-  # ord_no 對到語意最接近、且不會跟 Odoo 自動編號機制衝突的
-  # client_order_ref（客戶端參照欄位），把來源系統的原始單號留下可追溯的
-  # 落點；理由詳見 README.md。
+  # Task 4.5（昴君裁決）修正：map 階段新增的目標欄位唯一性檢查一上線，就在
+  # 我們自己的語料裡抓到一個真缺陷——ord_no（規則，confidence 100）與
+  # ord_cust_ref（啟發式，confidence 30）同時對到 client_order_ref，兩者
+  # 語意上不該共用同一個欄位：
+  #   - ord_cust_ref 是「客戶自己的訂單編號」，正是 catalog 對
+  #     client_order_ref 的定義（客戶端參照，用於單據對帳）——這才是它
+  #     該去的地方。
+  #   - ord_no 是 T100 自己（我們這邊）的訂單編號，語意上更接近
+  #     sale.order.name（訂單編號），佔用 client_order_ref 是配錯了。
+  # 下面把兩條規則都改正：ord_cust_ref 明確對到 client_order_ref，
+  # ord_no 明確對到 name。
+  #
+  # 🔴 sale.order.name 是 required=True 且有
+  # default=lambda self: _('New')（Odoo 內建自動編號機制，見 Odoo 17
+  # 原始碼 addons/sale/models/sale_order.py 第 51～55 行）。透過匯入資料
+  # 指定 name 時，Odoo 會不會用自己的自動編號覆寫掉匯入值——這件事本機
+  # 沒有 Odoo 環境可以驗證，必須留到後續的 CI 整合測試以載入階段實測
+  # 確認。若實測發現 Odoo 真的會覆寫：ord_no 的可追溯性依然不會遺失，
+  # 因為 ord_no 是 ord_mast 的主鍵，載入階段會用它組成 external_id
+  # （`migrai.<source_id>.ord_mast.<ord_no>`），來源系統的原始單號永遠
+  # 可以透過那個 external_id 追溯回去，不依賴 name 欄位是否保留原值。
   ord_mast.ord_no:
+    target: sale.order.name
+  ord_mast.ord_cust_ref:
     target: sale.order.client_order_ref
   ord_mast.ord_cust_no:
     target: sale.order.partner_id
@@ -69,16 +86,6 @@ columns:
     target: sale.order.date_order
   ord_mast.ord_memo:
     target: sale.order.note
-  # ord_mast.ord_cust_ref（客戶自己的訂單編號）刻意不在這裡宣告規則：
-  # client_order_ref 已經被 ord_no 佔用（見上），sale.order 沒有第二個
-  # 適合的欄位承接它。留給名稱／型別啟發式接手——會產生一筆信心只有 30
-  # （tier=needs_human）、一樣指向 client_order_ref 的低信心對應。
-  # Task 4.5（昴君裁決）：這個形狀現在會被 map 階段的目標欄位唯一性檢查
-  # 抓到（`ConflictKind.TARGET`），記進 mapping.json 的 conflicts 並發
-  # E-2001，讓 `migrai map` exit 1——不再是悄悄同時出現在 mappings 裡、
-  # 由載入階段誰後寫誰贏。這是刻意保留的示範案例，用來證明這個檢查真的
-  # 抓得到跨 tier（一個 auto 加一個 needs_human）的衝突；README.md 有
-  # 詳細說明。
 
   # --- ord_deta → sale.order.line --------------------------------------------
   # 🔴 這條沒有第二個選項：DDL 有宣告 ord_deta.ord_no 的外鍵（指向

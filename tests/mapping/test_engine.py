@@ -255,18 +255,41 @@ def test_two_source_columns_ruled_to_same_target_field_produce_target_conflict(
 
 
 def test_target_conflict_spans_auto_and_needs_human_tiers_like_case03(tmp_path: Path):
-    """跨 tier 都要抓：這裡直接用內建 catalog／規則重現 corpus case03 實際
-    揭露的形狀——`ord_mast.ord_no` 命中規則（confidence 100／auto），
+    """跨 tier 都要抓：`ord_mast.ord_no` 命中規則（confidence 100／auto），
     `ord_mast.ord_cust_ref` 沒有規則、落回名稱／型別啟發式
     （confidence 30／needs_human），兩者都對到 `sale.order.client_order_ref`。
     不能因為兩者信心層級不同就放過這組衝突。
+
+    這裡故意只用一條自訂的 column 規則（只宣告 `ord_no`），不用套件內建的
+    `RULES`（`load_rules(CATALOG)`）：這條測試原本直接借用 corpus case03
+    真實揭露的形狀，但 Task 4.5 之後那個形狀已經是 `sale_order.yaml` 裡的
+    真缺陷、已經修正（`ord_cust_ref` 現在改對到 `client_order_ref`、`ord_no`
+    改對到 `name`，不再衝突）。若這裡繼續用 `RULES`，這條測試就會跟著失去
+    「跨 tier」的測試對象。改用自訂 `RuleSet` 只宣告 `ord_no` 一條規則，讓
+    `ord_cust_ref` 繼續落回啟發式（confidence 30／needs_human，這是
+    catalog 對 `client_order_ref` 的說明文字與名稱正規化算出來的分數，跟
+    `sale_order.yaml` 目前怎麼寫無關），維持這條測試原本要驗證的機制：
+    「跨 tier（一個 auto 加一個 needs_human）的衝突也要被抓到」。
     """
+    rules = RuleSet(
+        table_rules={"ord_mast": TableRule("ord_mast", "sale.order", "test#ord_mast")},
+        column_rules={
+            ("ord_mast", "ord_no"): ColumnRule(
+                source_table="ord_mast",
+                source_column="ord_no",
+                target_model="sale.order",
+                target_field="client_order_ref",
+                transform=Transform(kind=TransformKind.IDENTITY),
+                origin="test#ord_mast.ord_no",
+            ),
+        },
+    )
     inventory = _inventory(
         [_table("ord_mast", [("ord_no", "CHAR(16)"), ("ord_cust_ref", "VARCHAR(40)")])]
     )
     log = _log(tmp_path)
 
-    mapping = build_mapping(inventory, CATALOG, RULES, event_log=log)
+    mapping = build_mapping(inventory, CATALOG, rules, event_log=log)
 
     by_column = {fm.source.column: fm for fm in mapping.mappings}
     assert by_column["ord_no"].tier == Tier.AUTO

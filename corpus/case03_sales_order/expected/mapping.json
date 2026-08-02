@@ -5,9 +5,9 @@
     "source_columns": 24,
     "mapped_columns": 22,
     "coverage_percent": 92,
-    "auto": 21,
+    "auto": 22,
     "suggested": 0,
-    "needs_human": 1
+    "needs_human": 0
   },
   "models": [
     {
@@ -395,11 +395,10 @@
         "ref_table": null,
         "ref_column": null
       },
-      "confidence": 30,
-      "tier": "needs_human",
+      "confidence": 100,
+      "tier": "auto",
       "reasons": [
-        "正規化後有交集但互不包含，交集 ['order', 'reference']（2）／聯集 ['order', 'customer', 'reference', 'client']（4），分數 = 0.6 × 2/4：來源 ['order', 'customer', 'reference']，目標 ['client', 'order', 'reference']",
-        "來源型別 `VARCHAR(40)`（家族：character）→ Odoo 型別 `char`：字元對字元，直接相容"
+        "命中欄位規則：sale_order.yaml#ord_mast.ord_cust_ref"
       ]
     },
     {
@@ -460,7 +459,7 @@
       },
       "target": {
         "model": "sale.order",
-        "field": "client_order_ref",
+        "field": "name",
         "type": "char"
       },
       "transform": {
@@ -620,16 +619,5 @@
       "reason": "catalog 中找不到型別相容且名稱相近的欄位"
     }
   ],
-  "conflicts": [
-    {
-      "table": "ord_mast",
-      "column": null,
-      "kind": "target",
-      "candidates": [
-        "ord_cust_ref",
-        "ord_no"
-      ],
-      "reason": "資料表 `ord_mast` 有 2 個來源欄位（ord_cust_ref、ord_no）同時對應到目標欄位 `sale.order.client_order_ref`——載入階段寫入同一筆記錄時，後寫入的值會覆蓋先寫入的，且沒有機制決定哪一個是正確答案，需要人工裁定保留哪一個來源欄位"
-    }
-  ]
+  "conflicts": []
 }

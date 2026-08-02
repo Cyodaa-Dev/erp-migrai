@@ -93,59 +93,53 @@ res.partner`：那條規則已經在 `res_partner.yaml` 裡，兩個規則檔講
 | `ord_deta.ord_no` | `sale.order.line.order_id` | `ord_mast` | `ord_no` | 是（一致，不觸發衝突） |
 | `ord_deta.ord_prod_no` | `sale.order.line.product_id` | `prod_mast` | `prod_no` | 否（DDL 刻意沒宣告，只能靠規則補——真實 T100 最常見的形狀） |
 
-## `ord_mast.ord_no` 為什麼對到 `client_order_ref` 而不是 `name`
+## `ord_mast.ord_no` 對到 `name`、`ord_cust_ref` 對到 `client_order_ref`
 
-`sale.order.name` 是 `required=True` 且有 `default=lambda: _('New')`（Odoo 內建的
-自動編號機制）。`ord_mast.ord_no` 要不要覆寫 `name`，牽涉到「用匯入資料寫入 `name`
-時 Odoo 會不會忽略它、改用自動編號覆寫掉」——這件事本任務沒有 Odoo 環境可以實測，
-留給未來載入階段的 CI 環境驗證。
+這個語料原本把 `ord_mast.ord_no`（T100 自己的訂單編號）對到
+`sale.order.client_order_ref`（客戶端參照欄位），而 `ord_mast.ord_cust_ref`
+（客戶自己的訂單編號／PO 號）沒有宣告規則、落回名稱／型別啟發式，也算出同一個
+`client_order_ref`（`confidence=30`／`tier=needs_human`）。這是配錯了：catalog
+對 `client_order_ref` 的定義是「客戶自己的訂單編號（客戶端參照），用於單據
+對帳」——`ord_cust_ref` 才是這個定義說的東西，`ord_no` 是我們自己的單號，不該
+佔用它。
 
-本任務先把 `ord_no`（T100 自己的訂單編號）對到 `sale.order.client_order_ref`
-（客戶端參照欄位）：這樣至少能把來源系統的原始單號寫進一個明確存在、且不會跟
-Odoo 自動編號機制衝突的欄位，維持可追溯性；等載入階段實測確認 `name` 的行為後，
-再決定要不要改接到 `name`。
+**Task 4.5（昴君裁決）在 map 階段新增的目標欄位唯一性檢查，第一時間在這份語料裡
+抓到了這個真缺陷**：`ord_no`（規則，confidence 100）與 `ord_cust_ref`（啟發式，
+confidence 30）同時對到 `client_order_ref`，記進 `mapping.json` 的
+`conflicts`（一筆 `kind == "target"`，`column` 為 `null`，`candidates` 是排序後
+的 `["ord_cust_ref", "ord_no"]`），並發 `E-2001`，讓 `migrai map` 對這個 case
+exit 1。這正是這項檢查存在的理由：抓出「同一筆記錄的同一個欄位到了載入階段會被
+後寫的覆蓋、且沒有機制決定哪一個贏」這種悄悄發生的資料遺失。
 
-### 已知的副作用：`ord_cust_ref` 落到 `needs_human`，且與 `ord_no` 互相衝突
+**修正**：`src/erp_migrai/mapping/rules/sale_order.yaml` 已經改為
+`ord_cust_ref → client_order_ref`（新增明確規則，confidence 100／auto）、
+`ord_no → name`。衝突的根源消失，`mapping.json` 的 `conflicts` 因此變回
+`[]`——這不是把檢查關掉，檢查機制仍然活著（見
+`tests/mapping/test_engine.py` 裡 Task 4.5 新增的測試），只是這個具體的示範
+案例已經不再示範衝突，而是示範衝突被抓到、被修正的完整流程。
 
-`ord_mast` 另外還有一欄 `ord_cust_ref`（客戶自己的訂單編號／PO 號），語意上其實
-更適合叫做「client order ref」；但這個名字已經被上面的 `ord_no` 決定占用了，
-`sale.order` 這份 catalog 裡沒有第二個適合承接它的欄位。`sale_order.yaml`
-**刻意不對它宣告規則**，讓它落回名稱／型別啟發式：
-
-```
-ord_mast.ord_cust_ref -> sale.order.client_order_ref  confidence=30  tier=needs_human
-```
-
-這是引擎的真實行為，不是本任務的失誤：`ord_cust_ref` 正規化後與
-`client_order_ref` 有部分 token 交集（`order`／`reference`），啟發式因此算出一個
-分數（`0.6 × 交集/聯集`），但因為分數只有 30（< `SUGGESTED_THRESHOLD=70`），被分到
-`needs_human`，不會被當成可信的自動對應——這正是分層機制存在的理由：字面上看起來
-沾親帶故、但不夠確定的猜測，要留給人審核，不能悄悄當真。
-
-`ord_no`（confidence 100／auto）與 `ord_cust_ref`（confidence 30／needs_human）
-因此會同時出現在 `mapping.json` 的 `mappings` 裡、都指向 `client_order_ref`——
-到了載入階段，同一筆記錄的這個欄位會被後寫的覆蓋，且沒有機制決定哪一個贏。這曾經是
-一個已知但沒被檢查的 MVP 限制；**Task 4.5（昴君裁決）在 map 階段新增了目標欄位
-唯一性檢查**，這個形狀現在會被記進 `mapping.json` 的 `conflicts`（一筆
-`kind == "target"`，`column` 為 `null`，`candidates` 是排序後的 `["ord_cust_ref",
-"ord_no"]`），並發 `E-2001`，讓 `migrai map` 對這個 case exit 1——這是刻意保留的
-示範案例，用來證明這個檢查真的抓得到「一個 auto 加一個 needs_human」跨 tier 的
-衝突，兩筆 `FieldMapping` 本身依然保留在 `mappings` 裡（衝突是「該用哪一個」的
-裁決問題，不是任一筆算錯了），只是多了一筆衝突提醒人工裁定。
+🔴 `sale.order.name` 是 `required=True` 且有
+`default=lambda self: _('New')`（Odoo 內建的自動編號機制，Odoo 17 原始碼
+`addons/sale/models/sale_order.py` 第 51～55 行）。用匯入資料寫入 `name` 時
+Odoo 會不會忽略它、改用自動編號覆寫掉——這件事本任務沒有 Odoo 環境可以實測，
+留給未來載入階段的 CI 整合測試驗證。若實測發現 Odoo 真的會覆寫：`ord_no` 的
+可追溯性依然不會遺失，因為 `ord_no` 是 `ord_mast` 的主鍵，載入階段會用它組成
+external_id（`migrai.<source_id>.ord_mast.<ord_no>`），來源系統的原始單號永遠
+可以透過那個 external_id 追溯回去。
 
 ## 其餘未對應欄位（`unmapped`）
 
-除了上述副作用，還有兩欄没有任何規則、啟發式也算不出任何相容對應，誠實地落在
-`mapping.json` 的 `unmapped`：
+還有兩欄没有任何規則、啟發式也算不出任何相容對應，誠實地落在 `mapping.json` 的
+`unmapped`：
 
 | 來源欄位 | 原因 |
 |---|---|
 | `prod_mast.prod_spec`（品號規格說明） | `product.product` 這份精簡 catalog 沒有收錄適合承接自由格式規格文字的欄位 |
 | `ord_deta.ord_seq`（明細行序號） | `sale.order.line` 沒有序號欄位；唯一有字面交集的候選 `order_id` 是 `many2one`，型別分數恆為 `0` |
 
-最終 `mapping.json` 的 `stats`：24 個來源欄位、22 筆對應（21 筆 `auto` + 1 筆
-`needs_human`）、2 筆 `unmapped`、0 筆 `conflicts`，覆蓋率 92%（高於 `E-2002` 的
-80% 門檻，不會觸發覆蓋率過低事件）。
+最終 `mapping.json` 的 `stats`：24 個來源欄位、22 筆對應（22 筆皆 `auto`）、
+2 筆 `unmapped`、0 筆 `conflicts`，覆蓋率 92%（高於 `E-2002` 的 80% 門檻，不會
+觸發覆蓋率過低事件）。
 
 ## 金額手算（`ord_qty × ord_price`）
 
