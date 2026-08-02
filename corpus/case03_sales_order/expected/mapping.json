@@ -1,0 +1,624 @@
+{
+  "schema_version": "1.1",
+  "inventory_synthetic": true,
+  "stats": {
+    "source_columns": 24,
+    "mapped_columns": 22,
+    "coverage_percent": 92,
+    "auto": 21,
+    "suggested": 0,
+    "needs_human": 1
+  },
+  "models": [
+    {
+      "source_table": "cust_mast",
+      "target_model": "res.partner",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：res_partner.yaml#cust_mast"
+      ]
+    },
+    {
+      "source_table": "ord_deta",
+      "target_model": "sale.order.line",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：sale_order.yaml#ord_deta"
+      ]
+    },
+    {
+      "source_table": "ord_mast",
+      "target_model": "sale.order",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：sale_order.yaml#ord_mast"
+      ]
+    },
+    {
+      "source_table": "prod_mast",
+      "target_model": "product.product",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：sale_order.yaml#prod_mast"
+      ]
+    }
+  ],
+  "mappings": [
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_addr",
+        "type": "VARCHAR(120)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "street",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_addr"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_credit",
+        "type": "DECIMAL(15,2)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "credit_limit",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_credit"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_name",
+        "type": "VARCHAR(60)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "name",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_name"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_no",
+        "type": "CHAR(10)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "ref",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_stus",
+        "type": "CHAR(1)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "active",
+        "type": "boolean"
+      },
+      "transform": {
+        "kind": "value_map",
+        "value_map": {
+          "Y": true,
+          "N": false
+        },
+        "default": true,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_stus"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_tel",
+        "type": "VARCHAR(20)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "phone",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_tel"
+      ]
+    },
+    {
+      "source": {
+        "table": "cust_mast",
+        "column": "cust_ubn",
+        "type": "CHAR(8)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "vat",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：res_partner.yaml#cust_mast.cust_ubn"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_deta",
+        "column": "ord_desc",
+        "type": "VARCHAR(200)"
+      },
+      "target": {
+        "model": "sale.order.line",
+        "field": "name",
+        "type": "text"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_deta.ord_desc"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_deta",
+        "column": "ord_no",
+        "type": "CHAR(16)"
+      },
+      "target": {
+        "model": "sale.order.line",
+        "field": "order_id",
+        "type": "many2one"
+      },
+      "transform": {
+        "kind": "reference",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": "ord_mast",
+        "ref_column": "ord_no"
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_deta.ord_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_deta",
+        "column": "ord_price",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "sale.order.line",
+        "field": "price_unit",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_deta.ord_price"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_deta",
+        "column": "ord_prod_no",
+        "type": "CHAR(20)"
+      },
+      "target": {
+        "model": "sale.order.line",
+        "field": "product_id",
+        "type": "many2one"
+      },
+      "transform": {
+        "kind": "reference",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": "prod_mast",
+        "ref_column": "prod_no"
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_deta.ord_prod_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_deta",
+        "column": "ord_qty",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "sale.order.line",
+        "field": "product_uom_qty",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_deta.ord_qty"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_mast",
+        "column": "ord_cust_no",
+        "type": "CHAR(10)"
+      },
+      "target": {
+        "model": "sale.order",
+        "field": "partner_id",
+        "type": "many2one"
+      },
+      "transform": {
+        "kind": "reference",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": "cust_mast",
+        "ref_column": "cust_no"
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_mast.ord_cust_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_mast",
+        "column": "ord_cust_ref",
+        "type": "VARCHAR(40)"
+      },
+      "target": {
+        "model": "sale.order",
+        "field": "client_order_ref",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 30,
+      "tier": "needs_human",
+      "reasons": [
+        "正規化後有交集但互不包含，交集 ['order', 'reference']（2）／聯集 ['order', 'customer', 'reference', 'client']（4），分數 = 0.6 × 2/4：來源 ['order', 'customer', 'reference']，目標 ['client', 'order', 'reference']",
+        "來源型別 `VARCHAR(40)`（家族：character）→ Odoo 型別 `char`：字元對字元，直接相容"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_mast",
+        "column": "ord_date",
+        "type": "DATE"
+      },
+      "target": {
+        "model": "sale.order",
+        "field": "date_order",
+        "type": "datetime"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_mast.ord_date"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_mast",
+        "column": "ord_memo",
+        "type": "VARCHAR(200)"
+      },
+      "target": {
+        "model": "sale.order",
+        "field": "note",
+        "type": "text"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_mast.ord_memo"
+      ]
+    },
+    {
+      "source": {
+        "table": "ord_mast",
+        "column": "ord_no",
+        "type": "CHAR(16)"
+      },
+      "target": {
+        "model": "sale.order",
+        "field": "client_order_ref",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#ord_mast.ord_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "prod_mast",
+        "column": "prod_cost",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "product.product",
+        "field": "standard_price",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#prod_mast.prod_cost"
+      ]
+    },
+    {
+      "source": {
+        "table": "prod_mast",
+        "column": "prod_name",
+        "type": "VARCHAR(80)"
+      },
+      "target": {
+        "model": "product.product",
+        "field": "name",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#prod_mast.prod_name"
+      ]
+    },
+    {
+      "source": {
+        "table": "prod_mast",
+        "column": "prod_no",
+        "type": "CHAR(20)"
+      },
+      "target": {
+        "model": "product.product",
+        "field": "default_code",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#prod_mast.prod_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "prod_mast",
+        "column": "prod_price",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "product.product",
+        "field": "list_price",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#prod_mast.prod_price"
+      ]
+    },
+    {
+      "source": {
+        "table": "prod_mast",
+        "column": "prod_stus",
+        "type": "CHAR(1)"
+      },
+      "target": {
+        "model": "product.product",
+        "field": "active",
+        "type": "boolean"
+      },
+      "transform": {
+        "kind": "value_map",
+        "value_map": {
+          "Y": true,
+          "N": false
+        },
+        "default": true,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：sale_order.yaml#prod_mast.prod_stus"
+      ]
+    }
+  ],
+  "unmapped": [
+    {
+      "table": "ord_deta",
+      "column": "ord_seq",
+      "type": "INTEGER",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "prod_mast",
+      "column": "prod_spec",
+      "type": "VARCHAR(120)",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    }
+  ],
+  "conflicts": []
+}

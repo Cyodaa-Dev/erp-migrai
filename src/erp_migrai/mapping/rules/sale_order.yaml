@@ -1,0 +1,107 @@
+# 映射規則：T100 銷售訂單（單頭 ord_mast + 明細 ord_deta）與品號主檔
+# prod_mast → Odoo sale.order / sale.order.line / product.product
+#
+# 【貢獻點③】跟 res_partner.yaml 一樣，這是人類知識，不需要改任何 Python。
+#
+# cust_mast → res.partner 已經在 res_partner.yaml 宣告過，這裡刻意不重複
+# 宣告（見 rules/README.md：重複且不矛盾雖然會被靜默保留，但兩份檔案講
+# 同一件事，等於留了一個「改一邊忘另一邊」的地雷）。
+#
+# 兩條 reference 分別演練兩種真實 T100 常見的外鍵形狀：
+#   - ord_mast.ord_cust_no：DDL 有宣告 FOREIGN KEY（schema.sql），規則宣告
+#     的 ref_table／ref_column 與 DDL 一致，不會觸發 E-2001。
+#   - ord_deta.ord_prod_no：DDL 刻意沒有宣告 FK（schema.sql 的註解說明），
+#     只能靠這裡的規則補上——這是真實 T100 更常見的形狀：代碼式表名、
+#     參照關係只存在於程式邏輯與人的知識裡。
+version: 1
+
+tables:
+  prod_mast:
+    target_model: product.product
+  ord_mast:
+    target_model: sale.order
+  ord_deta:
+    target_model: sale.order.line
+
+columns:
+  # --- prod_mast → product.product -----------------------------------------
+  prod_mast.prod_no:
+    target: product.product.default_code
+  prod_mast.prod_name:
+    target: product.product.name
+  prod_mast.prod_price:
+    target: product.product.list_price
+  prod_mast.prod_cost:
+    target: product.product.standard_price
+  # T100 用 CHAR(1) 的 Y/N 表示品號是否啟用，Odoo 的 active 是 boolean，
+  # 跟 res_partner.yaml#cust_mast.cust_stus 同一個理由，需要值轉換。
+  prod_mast.prod_stus:
+    target: product.product.active
+    transform:
+      kind: value_map
+      map:
+        "Y": true
+        "N": false
+      default: true
+  # prod_mast.prod_spec（規格說明）刻意不在這裡宣告規則：product.product
+  # 這份 catalog 收錄的欄位裡沒有適合承接自由格式規格文字的欄位（name 是
+  # 品名、沒有獨立的 description／規格欄位）。名稱與型別啟發式對它算出的
+  # 分數也是 0（正規化後與 catalog 任何欄位都沒有交集），所以它會落進
+  # mapping.json 的 unmapped，理由是「catalog 中找不到型別相容且名稱相近
+  # 的欄位」——這是誠實的「目前沒有地方放」，不是遺漏。
+
+  # --- ord_mast → sale.order -------------------------------------------------
+  # sale.order.name 是 required=True 且有 default（Odoo 自動編號)。
+  # ord_mast.ord_no 要不要覆寫 name，牽涉到「Odoo 會不會覆寫自動編號」，
+  # 這一點留待載入階段以 CI 實測確認（見案例 README.md）。本任務先把
+  # ord_no 對到語意最接近、且不會跟 Odoo 自動編號機制衝突的
+  # client_order_ref（客戶端參照欄位），把來源系統的原始單號留下可追溯的
+  # 落點；理由詳見 README.md。
+  ord_mast.ord_no:
+    target: sale.order.client_order_ref
+  ord_mast.ord_cust_no:
+    target: sale.order.partner_id
+    transform:
+      kind: reference
+      ref_table: cust_mast
+      ref_column: cust_no
+  ord_mast.ord_date:
+    target: sale.order.date_order
+  ord_mast.ord_memo:
+    target: sale.order.note
+  # ord_mast.ord_cust_ref（客戶自己的訂單編號）刻意不在這裡宣告規則：
+  # client_order_ref 已經被 ord_no 佔用（見上），sale.order 沒有第二個
+  # 適合的欄位承接它。留給名稱／型別啟發式接手——會產生一筆信心只有 30
+  # （tier=needs_human）、一樣指向 client_order_ref 的低信心對應，這是
+  # MVP 已知的限制（同一個目標欄位可以被兩個不同來源欄位同時對應到，
+  # 目前沒有跨欄位的唯一性檢查）。README.md 有詳細說明，這不是意外。
+
+  # --- ord_deta → sale.order.line --------------------------------------------
+  # 🔴 這條沒有第二個選項：DDL 有宣告 ord_deta.ord_no 的外鍵（指向
+  # ord_mast.ord_no），但「從 DDL 外鍵自動產生 reference」已被證實是永遠
+  # 打不開的死碼並整段拿掉（見 mapping/engine.py 模組層級註解），所以
+  # one2many 分組必須的 order_id 一樣要靠規則明確宣告。
+  ord_deta.ord_no:
+    target: sale.order.line.order_id
+    transform:
+      kind: reference
+      ref_table: ord_mast
+      ref_column: ord_no
+  # ord_deta.ord_prod_no：DDL 刻意沒有宣告 FK（見 schema.sql 註解），
+  # 只能靠這條規則宣告 reference。
+  ord_deta.ord_prod_no:
+    target: sale.order.line.product_id
+    transform:
+      kind: reference
+      ref_table: prod_mast
+      ref_column: prod_no
+  ord_deta.ord_desc:
+    target: sale.order.line.name
+  ord_deta.ord_qty:
+    target: sale.order.line.product_uom_qty
+  ord_deta.ord_price:
+    target: sale.order.line.price_unit
+  # ord_deta.ord_seq（明細行序號）刻意不在這裡宣告規則：這份 catalog 裡
+  # sale.order.line 沒有序號欄位，名稱／型別啟發式對它算出的分數也是 0
+  # （唯一有字面交集的欄位 order_id 是 many2one，型別分數恆為 0），會落進
+  # unmapped，理由同樣是「找不到型別相容且名稱相近的欄位」。

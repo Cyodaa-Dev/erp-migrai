@@ -149,3 +149,53 @@ class TestCase01Partner:
     def test_database_conflicts_is_empty(self, inventory):
         """單一 DATABASE 宣告的專案不應出現任何衝突名稱（Resolution 2）。"""
         assert inventory.database_conflicts == []
+
+
+def test_case03_references_are_all_rule_declared():
+    """case03 的每一條 reference 都必須來自規則檔宣告。
+
+    🔴 2026-08-02 修訂：本測試原本斷言「兩條產生 reference 的路徑都活著」，
+    但 Task 3 實測證明「從 DDL 外鍵自動產生 reference」是永遠打不開的死碼，
+    昴君已裁決整段拿掉。現在 reference 只有一個來源：規則檔明確宣告
+    （= 貢獻點③，也是設計 spec P3-5 本來就寫明的主路徑）。
+
+    仍然保留對 ord_cust_no 與 ord_prod_no 兩筆的斷言，因為它們證明的是
+    不同的事：ord_cust_no 的 DDL **有**宣告 FK（規則與 DDL 一致，
+    不該發衝突）；ord_prod_no 的 DDL **刻意沒有**宣告（真實 T100 最常見的
+    形狀，只能靠規則補）。兩者都要走得通。
+    """
+    mapping = json.loads(
+        (CORPUS_ROOT / "case03_sales_order" / "expected" / "mapping.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    by_source = {(m["source"]["table"], m["source"]["column"]): m for m in mapping["mappings"]}
+
+    cust_ref = by_source[("ord_mast", "ord_cust_no")]["transform"]
+    assert cust_ref["kind"] == "reference"
+    assert cust_ref["ref_table"] == "cust_mast"
+    assert cust_ref["ref_column"] == "cust_no"
+
+    prod_ref = by_source[("ord_deta", "ord_prod_no")]["transform"]
+    assert prod_ref["kind"] == "reference"
+    assert prod_ref["ref_table"] == "prod_mast"
+    assert prod_ref["ref_column"] == "prod_no"
+
+    assert mapping["conflicts"] == []
+
+
+def test_case03_reports_unsupported_syntax_but_data_tables_are_complete():
+    """不支援語法影響程式盤點，不影響資料遷移——這兩件事必須同時成立。
+
+    這是總設計 §3.2 的核心宣稱，也是計劃 3 要證明的行為。若這條測試因為
+    unsupported_syntax 變空而失敗，代表混入的語法其實被支援了，case03 就
+    失去它存在的一半理由。
+    """
+    inventory = json.loads(
+        (CORPUS_ROOT / "case03_sales_order" / "expected" / "inventory.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(inventory["unsupported_syntax"]) >= 2
+    table_names = {t["name"] for t in inventory["tables"]}
+    assert table_names == {"cust_mast", "prod_mast", "ord_mast", "ord_deta"}

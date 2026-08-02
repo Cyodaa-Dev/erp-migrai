@@ -1,0 +1,444 @@
+{
+  "synthetic": true,
+  "schema_version": "1.0",
+  "database": "ds",
+  "source_files": [
+    "schema.sql",
+    "so_maintain.4gl"
+  ],
+  "tables": [
+    {
+      "name": "cust_mast",
+      "columns": [
+        {
+          "name": "cust_no",
+          "type": "CHAR(10)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "cust_name",
+          "type": "VARCHAR(60)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "cust_ubn",
+          "type": "CHAR(8)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "cust_tel",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "cust_addr",
+          "type": "VARCHAR(120)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "cust_credit",
+          "type": "DECIMAL(15,2)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "cust_stus",
+          "type": "CHAR(1)",
+          "nullable": true,
+          "default": "Y"
+        }
+      ],
+      "primary_key": [
+        "cust_no"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "name": "ord_deta",
+      "columns": [
+        {
+          "name": "ord_no",
+          "type": "CHAR(16)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "ord_seq",
+          "type": "INTEGER",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "ord_prod_no",
+          "type": "CHAR(20)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "ord_qty",
+          "type": "DECIMAL(15,4)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "ord_price",
+          "type": "DECIMAL(15,4)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "ord_desc",
+          "type": "VARCHAR(200)",
+          "nullable": true,
+          "default": null
+        }
+      ],
+      "primary_key": [
+        "ord_no",
+        "ord_seq"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "ord_no"
+          ],
+          "ref_table": "ord_mast",
+          "ref_columns": [
+            "ord_no"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ord_mast",
+      "columns": [
+        {
+          "name": "ord_no",
+          "type": "CHAR(16)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "ord_cust_no",
+          "type": "CHAR(10)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "ord_date",
+          "type": "DATE",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "ord_cust_ref",
+          "type": "VARCHAR(40)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "ord_memo",
+          "type": "VARCHAR(200)",
+          "nullable": true,
+          "default": null
+        }
+      ],
+      "primary_key": [
+        "ord_no"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "ord_cust_no"
+          ],
+          "ref_table": "cust_mast",
+          "ref_columns": [
+            "cust_no"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "prod_mast",
+      "columns": [
+        {
+          "name": "prod_no",
+          "type": "CHAR(20)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "prod_name",
+          "type": "VARCHAR(80)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "prod_spec",
+          "type": "VARCHAR(120)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "prod_price",
+          "type": "DECIMAL(15,4)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "prod_cost",
+          "type": "DECIMAL(15,4)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "prod_stus",
+          "type": "CHAR(1)",
+          "nullable": true,
+          "default": "Y"
+        }
+      ],
+      "primary_key": [
+        "prod_no"
+      ],
+      "foreign_keys": []
+    }
+  ],
+  "programs": [
+    {
+      "kind": "GLOBALS",
+      "name": null,
+      "file": "so_maintain.4gl",
+      "start_line": 16,
+      "end_line": 18,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "g_user",
+          "type": "CHAR(10)",
+          "line": 17
+        }
+      ],
+      "sql": [],
+      "unsupported": []
+    },
+    {
+      "kind": "MAIN",
+      "name": null,
+      "file": "so_maintain.4gl",
+      "start_line": 20,
+      "end_line": 23,
+      "parse_status": "ok",
+      "definitions": [],
+      "sql": [],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "so_maintain",
+      "file": "so_maintain.4gl",
+      "start_line": 25,
+      "end_line": 42,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "l_cnt",
+          "type": "INTEGER",
+          "line": 26
+        }
+      ],
+      "sql": [
+        {
+          "kind": "SELECT",
+          "tables": [
+            "ord_mast"
+          ],
+          "line": 28
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "so_insert",
+      "file": "so_maintain.4gl",
+      "start_line": 44,
+      "end_line": 59,
+      "parse_status": "partial",
+      "definitions": [
+        {
+          "name": "p_ord",
+          "type": "RECORD LIKE ord_mast.*",
+          "line": 49
+        },
+        {
+          "name": "p_deta",
+          "type": "RECORD LIKE ord_deta.*",
+          "line": 50
+        }
+      ],
+      "sql": [
+        {
+          "kind": "INSERT",
+          "tables": [
+            "ord_mast"
+          ],
+          "line": 54
+        },
+        {
+          "kind": "INSERT",
+          "tables": [
+            "ord_deta"
+          ],
+          "line": 58
+        }
+      ],
+      "unsupported": [
+        {
+          "file": "so_maintain.4gl",
+          "line": 47,
+          "snippet": "DEFER INTERRUPT",
+          "reason": "無法辨識的語句關鍵字"
+        }
+      ]
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "so_update",
+      "file": "so_maintain.4gl",
+      "start_line": 61,
+      "end_line": 72,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "p_no",
+          "type": "LIKE ord_mast.ord_no",
+          "line": 62
+        },
+        {
+          "name": "p_ord",
+          "type": "RECORD LIKE ord_mast.*",
+          "line": 63
+        }
+      ],
+      "sql": [
+        {
+          "kind": "SELECT",
+          "tables": [
+            "ord_mast"
+          ],
+          "line": 65
+        },
+        {
+          "kind": "UPDATE",
+          "tables": [
+            "ord_mast"
+          ],
+          "line": 71
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "so_delete",
+      "file": "so_maintain.4gl",
+      "start_line": 74,
+      "end_line": 80,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "p_no",
+          "type": "LIKE ord_mast.ord_no",
+          "line": 75
+        }
+      ],
+      "sql": [
+        {
+          "kind": "DELETE",
+          "tables": [
+            "ord_deta"
+          ],
+          "line": 78
+        },
+        {
+          "kind": "DELETE",
+          "tables": [
+            "ord_mast"
+          ],
+          "line": 79
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "so_list_deta",
+      "file": "so_maintain.4gl",
+      "start_line": 82,
+      "end_line": 102,
+      "parse_status": "partial",
+      "definitions": [
+        {
+          "name": "p_no",
+          "type": "LIKE ord_mast.ord_no",
+          "line": 83
+        },
+        {
+          "name": "p_deta",
+          "type": "RECORD LIKE ord_deta.*",
+          "line": 84
+        }
+      ],
+      "sql": [
+        {
+          "kind": "DECLARE_CURSOR",
+          "tables": [
+            "ord_deta"
+          ],
+          "line": 86
+        }
+      ],
+      "unsupported": [
+        {
+          "file": "so_maintain.4gl",
+          "line": 97,
+          "snippet": "TRY",
+          "reason": "無法辨識的語句關鍵字"
+        },
+        {
+          "file": "so_maintain.4gl",
+          "line": 99,
+          "snippet": "CATCH",
+          "reason": "無法辨識的語句關鍵字"
+        }
+      ]
+    }
+  ],
+  "unsupported_syntax": [
+    {
+      "file": "so_maintain.4gl",
+      "line": 47,
+      "snippet": "DEFER INTERRUPT",
+      "reason": "無法辨識的語句關鍵字"
+    },
+    {
+      "file": "so_maintain.4gl",
+      "line": 97,
+      "snippet": "TRY",
+      "reason": "無法辨識的語句關鍵字"
+    },
+    {
+      "file": "so_maintain.4gl",
+      "line": 99,
+      "snippet": "CATCH",
+      "reason": "無法辨識的語句關鍵字"
+    }
+  ],
+  "database_conflicts": []
+}
