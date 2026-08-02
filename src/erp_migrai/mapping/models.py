@@ -33,15 +33,26 @@ class TransformKind(StrEnum):
 
 
 class ConflictKind(StrEnum):
-    """`MappingConflict` 的判別欄位：這筆衝突是整張表對不上模型，還是某張表
-    已經對到模型、但某個欄位對不上目標欄位。修正輪次 1（Important 3，人類
-    裁定）新增：先前引擎用 `column == ""` 當表級衝突的哨兵值，但
-    `mapping.schema.json` 把 `column` 宣告成一般字串，遵循契約的消費者會把
-    表級衝突誤讀成「有一個名字剛好叫空字串的欄位衝突」；`candidates` 的意義
-    也隨 `kind` 而不同（見 `MappingConflict` docstring）。"""
+    """`MappingConflict` 的判別欄位：這筆衝突是整張表對不上模型、某張表已經
+    對到模型但某個欄位對不上目標欄位，還是同一張表裡有一個以上的來源欄位
+    搶著對到同一個目標欄位。修正輪次 1（Important 3，人類裁定）新增：先前
+    引擎用 `column == ""` 當表級衝突的哨兵值，但 `mapping.schema.json` 把
+    `column` 宣告成一般字串，遵循契約的消費者會把表級衝突誤讀成「有一個
+    名字剛好叫空字串的欄位衝突」；`candidates` 的意義也隨 `kind` 而不同
+    （見 `MappingConflict` docstring）。
+
+    Task 4.5（昴君裁決，schema 1.1 直接新增，不升版——1.1 尚未合併、還沒
+    出貨給任何消費者）：新增 `TARGET`。corpus case03 揭露的缺口是
+    `ord_mast.ord_no`（明確規則，confidence 100）與 `ord_mast.ord_cust_ref`
+    （啟發式，confidence 30）都對到 `sale.order.client_order_ref`——到了
+    載入階段，同一筆記錄的同一個欄位會被後寫的覆蓋，且使用者無從得知哪一個
+    贏。`TABLE`／`COLUMN` 的既有衝突檢查都抓不到這個形狀：前者管的是「表對不上
+    模型」，後者管的是「一個來源欄位對到多個並列的目標」，唯獨少了「一個目標
+    被多個來源欄位搶」這個方向。"""
 
     TABLE = "table"
     COLUMN = "column"
+    TARGET = "target"
 
 
 def tier_for(confidence: int) -> Tier:
@@ -118,6 +129,11 @@ class MappingConflict:
     - `kind == ConflictKind.COLUMN`：表已經對到模型，但某個欄位對不上目標
       欄位（或對到多個並列的欄位／規則衝突）。`column` 是實際的來源欄位
       名稱，`candidates` 是 `模型.欄位` 字串清單。
+    - `kind == ConflictKind.TARGET`（Task 4.5）：同一張來源表裡，有一個以上
+      的來源欄位都對應到同一個目標欄位（`模型.欄位`）——載入階段寫入同一筆
+      記錄時，這些來源欄位的值會互相覆蓋，且沒有機制決定哪一個是對的。
+      `column` 為 `None`（這筆衝突不對應任何單一來源欄位，跟 `TABLE` 同理），
+      `candidates` 是互相搶同一個目標的**來源欄位名稱**清單，依字典序排序。
     """
 
     table: str

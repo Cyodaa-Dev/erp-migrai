@@ -40,6 +40,7 @@ from erp_migrai.mapping.models import (
 )
 from erp_migrai.mapping.writer import (
     TABLE_CONFLICT_COLUMN_LABEL,
+    TARGET_CONFLICT_COLUMN_LABEL,
     MappingSchemaError,
     MappingSerializationError,
     validate_mapping,
@@ -540,6 +541,50 @@ def test_csv_table_level_conflict_row_uses_unambiguous_column_label(tmp_path):
     assert "表名與兩個模型的最後一段同分並列" in row[9]
     assert "purchase.order" in row[9]
     assert "sale.order" in row[9]
+
+
+def test_csv_target_conflict_row_uses_dedicated_column_label(tmp_path):
+    """Task 4.5：`kind == target` 時 `column is None`——跟 `table` 一樣不能
+    留白，但語意不同（不是整張表對不上模型，而是同一張表裡多個來源欄位搶
+    同一個目標欄位），所以要用專屬標籤，不能直接借用
+    `TABLE_CONFLICT_COLUMN_LABEL`：那會讓 CSV 讀者誤以為這是表級衝突，
+    白白跑去查一個其實對得上模型的表。
+    """
+    mapping = Mapping(
+        schema_version=SCHEMA_VERSION,
+        inventory_synthetic=True,
+        stats=MappingStats(
+            source_columns=2,
+            mapped_columns=2,
+            coverage_percent=100,
+            auto=1,
+            suggested=0,
+            needs_human=1,
+        ),
+        conflicts=[
+            MappingConflict(
+                table="ord_mast",
+                column=None,
+                kind=ConflictKind.TARGET,
+                candidates=["ord_cust_ref", "ord_no"],
+                reason=(
+                    "資料表 `ord_mast` 有 2 個來源欄位（ord_cust_ref、ord_no）同時對應到"
+                    "目標欄位 `sale.order.client_order_ref`——載入階段會互相覆蓋"
+                ),
+            ),
+        ],
+    )
+    path = write_mapping_csv(mapping, tmp_path / "out")
+    rows = _read_csv_rows(path)[1:]
+    row = next(r for r in rows if r[0] == "ord_mast")
+
+    assert row[1] == TARGET_CONFLICT_COLUMN_LABEL
+    assert row[1] != TABLE_CONFLICT_COLUMN_LABEL
+    assert row[3] == ""  # target_model：多個來源欄位搶同一個目標，寫在 reasons
+    assert row[8] == "conflict"
+    assert "sale.order.client_order_ref" in row[9]
+    assert "ord_cust_ref" in row[9]
+    assert "ord_no" in row[9]
 
 
 # ---------------------------------------------------------------------------

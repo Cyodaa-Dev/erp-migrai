@@ -168,6 +168,14 @@ def build_mapping(
     models = _resolve_duplicate_model_mappings(models, conflicts)
     mappings = _resolve_duplicate_field_mappings(mappings, conflicts)
 
+    # Task 4.5（昴君裁決）：corpus case03 揭露的缺口——`rules_loader` 的衝突
+    # 檢查只擋「同一個來源欄位對到兩個不同的 target」，沒有任何地方檢查
+    # 「同一個 target 被兩個不同的來源欄位對應」。到了載入階段，同一筆記錄的
+    # 同一個欄位會被後寫的覆蓋，而使用者無從得知哪一個贏。這裡在 `mappings`
+    # 最終定案（重複表名已經解決過）之後、去重與排序之前偵測這個形狀，記進
+    # `conflicts`——比到載入階段才發現資料被覆蓋便宜太多。
+    _detect_target_field_conflicts(mappings, conflicts)
+
     # 最終整分支審查修正（第三組）Important 1：上面兩個 `_resolve_duplicate_*`
     # 只處理了 `models`／`mappings` 兩個清單——重複表名（`inventory.schema.json`
     # 的 `tables` 陣列沒有 `uniqueItems`）如果是「內容完全相同」的重複，同一張
@@ -413,6 +421,55 @@ def _resolve_duplicate_field_mappings(
             )
         )
     return resolved
+
+
+def _detect_target_field_conflicts(
+    mappings: list[FieldMapping], conflicts_out: list[MappingConflict]
+) -> None:
+    """Task 4.5（昴君裁決）：同一張來源表裡，若有一個以上的來源欄位都對應到
+    同一個目標欄位（`模型.欄位`），記一筆 `ConflictKind.TARGET` 衝突。
+
+    只在**同一張來源表內**比對——不同來源表對到同一個 Odoo 欄位是正常的，
+    它們會變成不同的記錄，不該被誤報。跨 tier 都要抓：一筆 `auto` 加一筆
+    `needs_human` 也是衝突（corpus case03 的 `ord_mast.ord_no`／
+    `ord_mast.ord_cust_ref` 都對到 `sale.order.client_order_ref` 正是這個
+    形狀）。`unmapped` 的欄位本來就不在 `mappings` 清單裡，天然被排除。
+
+    這裡不會把命中的 `FieldMapping` 從 `mappings` 移除——衝突是「該用哪一個」
+    的裁決問題，不是任一筆本身算錯了，兩筆都要保留讓人類看到完整事實，只是
+    多記一筆衝突提醒「這裡需要人工裁定」。`_build_stats` 因此不需要調整：
+    這些來源欄位仍然透過 `mappings` 被計入 `mapped_columns`，不能再算進
+    `source_columns` 的分母一次，否則會重複計算。
+    """
+    grouped: dict[tuple[str, str, str], list[str]] = {}
+    order: list[tuple[str, str, str]] = []
+    for fm in mappings:
+        key = (fm.source.table, fm.target.model, fm.target.field)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(fm.source.column)
+
+    for key in order:
+        table, target_model, target_field = key
+        columns = sorted(set(grouped[key]))
+        if len(columns) <= 1:
+            continue
+        conflicts_out.append(
+            MappingConflict(
+                table=table,
+                column=None,
+                kind=ConflictKind.TARGET,
+                candidates=columns,
+                reason=(
+                    f"資料表 `{table}` 有 {len(columns)} 個來源欄位"
+                    f"（{'、'.join(columns)}）同時對應到目標欄位 "
+                    f"`{target_model}.{target_field}`——載入階段寫入同一筆記錄時，"
+                    "後寫入的值會覆蓋先寫入的，且沒有機制決定哪一個是正確答案，"
+                    "需要人工裁定保留哪一個來源欄位"
+                ),
+            )
+        )
 
 
 def _dedupe_full_equality(items: list[Any]) -> list[Any]:

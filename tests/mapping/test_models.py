@@ -83,8 +83,10 @@ def test_reference_transform_carries_ref_table_and_ref_column():
     assert t.value is None
 
 
-def test_conflict_kinds_are_exactly_two():
-    assert sorted(k.value for k in ConflictKind) == ["column", "table"]
+def test_conflict_kinds_are_exactly_three():
+    """Task 4.5：新增 `target`（同一個目標欄位被一個以上的來源欄位對應），
+    對 enum 斷言完整值集合，抓「有人多加了第四種」。"""
+    assert sorted(k.value for k in ConflictKind) == ["column", "table", "target"]
 
 
 def _build_full_mapping() -> Mapping:
@@ -184,6 +186,19 @@ def _build_full_mapping() -> Mapping:
                 kind=ConflictKind.TABLE,
                 candidates=["purchase.order", "sale.order"],
                 reason="表名與兩個模型的最後一段同分並列",
+            ),
+            # Task 4.5：target 級衝突同樣用 `column=None`，`candidates` 是
+            # 互相搶同一個目標欄位的**來源欄位**名稱清單——與上面兩筆刻意
+            # 不同，讓這個測試同時涵蓋 `ConflictKind` 三個值。
+            MappingConflict(
+                table="ord_mast",
+                column=None,
+                kind=ConflictKind.TARGET,
+                candidates=["ord_cust_ref", "ord_no"],
+                reason=(
+                    "資料表 `ord_mast` 有 2 個來源欄位（ord_cust_ref、ord_no）同時對應到"
+                    "目標欄位 `sale.order.client_order_ref`——載入階段會互相覆蓋"
+                ),
             ),
         ],
     )
@@ -612,9 +627,11 @@ def test_tier_enum_is_exactly_the_three_defined_values():
     assert set(schema["$defs"]["tier"]["enum"]) == {"auto", "suggested", "needs_human"}
 
 
-def test_conflict_kind_enum_is_exactly_the_two_defined_values():
+def test_conflict_kind_enum_is_exactly_the_three_defined_values():
+    """Task 4.5：`conflict_kind` 的 enum 現在有三個值——`table`／`column`／
+    `target`。斷言完整集合，抓「有人在尾巴多塞一個第四值」這種放寬。"""
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    assert set(schema["$defs"]["conflict_kind"]["enum"]) == {"table", "column"}
+    assert set(schema["$defs"]["conflict_kind"]["enum"]) == {"table", "column", "target"}
 
 
 def test_transform_kind_enum_is_exactly_the_four_defined_values():

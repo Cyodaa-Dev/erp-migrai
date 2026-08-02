@@ -72,9 +72,13 @@ columns:
   # ord_mast.ord_cust_ref（客戶自己的訂單編號）刻意不在這裡宣告規則：
   # client_order_ref 已經被 ord_no 佔用（見上），sale.order 沒有第二個
   # 適合的欄位承接它。留給名稱／型別啟發式接手——會產生一筆信心只有 30
-  # （tier=needs_human）、一樣指向 client_order_ref 的低信心對應，這是
-  # MVP 已知的限制（同一個目標欄位可以被兩個不同來源欄位同時對應到，
-  # 目前沒有跨欄位的唯一性檢查）。README.md 有詳細說明，這不是意外。
+  # （tier=needs_human）、一樣指向 client_order_ref 的低信心對應。
+  # Task 4.5（昴君裁決）：這個形狀現在會被 map 階段的目標欄位唯一性檢查
+  # 抓到（`ConflictKind.TARGET`），記進 mapping.json 的 conflicts 並發
+  # E-2001，讓 `migrai map` exit 1——不再是悄悄同時出現在 mappings 裡、
+  # 由載入階段誰後寫誰贏。這是刻意保留的示範案例，用來證明這個檢查真的
+  # 抓得到跨 tier（一個 auto 加一個 needs_human）的衝突；README.md 有
+  # 詳細說明。
 
   # --- ord_deta → sale.order.line --------------------------------------------
   # 🔴 這條沒有第二個選項：DDL 有宣告 ord_deta.ord_no 的外鍵（指向

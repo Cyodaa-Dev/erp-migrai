@@ -620,5 +620,16 @@
       "reason": "catalog 中找不到型別相容且名稱相近的欄位"
     }
   ],
-  "conflicts": []
+  "conflicts": [
+    {
+      "table": "ord_mast",
+      "column": null,
+      "kind": "target",
+      "candidates": [
+        "ord_cust_ref",
+        "ord_no"
+      ],
+      "reason": "資料表 `ord_mast` 有 2 個來源欄位（ord_cust_ref、ord_no）同時對應到目標欄位 `sale.order.client_order_ref`——載入階段寫入同一筆記錄時，後寫入的值會覆蓋先寫入的，且沒有機制決定哪一個是正確答案，需要人工裁定保留哪一個來源欄位"
+    }
+  ]
 }

@@ -105,7 +105,7 @@ res.partner`：那條規則已經在 `res_partner.yaml` 裡，兩個規則檔講
 Odoo 自動編號機制衝突的欄位，維持可追溯性；等載入階段實測確認 `name` 的行為後，
 再決定要不要改接到 `name`。
 
-### 已知的副作用：`ord_cust_ref` 落到 `needs_human`
+### 已知的副作用：`ord_cust_ref` 落到 `needs_human`，且與 `ord_no` 互相衝突
 
 `ord_mast` 另外還有一欄 `ord_cust_ref`（客戶自己的訂單編號／PO 號），語意上其實
 更適合叫做「client order ref」；但這個名字已經被上面的 `ord_no` 決定占用了，
@@ -120,11 +120,18 @@ ord_mast.ord_cust_ref -> sale.order.client_order_ref  confidence=30  tier=needs_
 `client_order_ref` 有部分 token 交集（`order`／`reference`），啟發式因此算出一個
 分數（`0.6 × 交集/聯集`），但因為分數只有 30（< `SUGGESTED_THRESHOLD=70`），被分到
 `needs_human`，不會被當成可信的自動對應——這正是分層機制存在的理由：字面上看起來
-沾親帶故、但不夠確定的猜測，要留給人審核，不能悄悄當真。目前的引擎沒有「同一個
-目標欄位只能被一個來源欄位對應」的檢查，`ord_no`（confidence 100／auto）與
-`ord_cust_ref`（confidence 30／needs_human）因此會同時出現在 `mapping.json` 的
-`mappings` 裡、都指向 `client_order_ref`——這是已知的 MVP 限制，留給未來任務視情況
-決定是否要補上目標欄位唯一性檢查。
+沾親帶故、但不夠確定的猜測，要留給人審核，不能悄悄當真。
+
+`ord_no`（confidence 100／auto）與 `ord_cust_ref`（confidence 30／needs_human）
+因此會同時出現在 `mapping.json` 的 `mappings` 裡、都指向 `client_order_ref`——
+到了載入階段，同一筆記錄的這個欄位會被後寫的覆蓋，且沒有機制決定哪一個贏。這曾經是
+一個已知但沒被檢查的 MVP 限制；**Task 4.5（昴君裁決）在 map 階段新增了目標欄位
+唯一性檢查**，這個形狀現在會被記進 `mapping.json` 的 `conflicts`（一筆
+`kind == "target"`，`column` 為 `null`，`candidates` 是排序後的 `["ord_cust_ref",
+"ord_no"]`），並發 `E-2001`，讓 `migrai map` 對這個 case exit 1——這是刻意保留的
+示範案例，用來證明這個檢查真的抓得到「一個 auto 加一個 needs_human」跨 tier 的
+衝突，兩筆 `FieldMapping` 本身依然保留在 `mappings` 裡（衝突是「該用哪一個」的
+裁決問題，不是任一筆算錯了），只是多了一筆衝突提醒人工裁定。
 
 ## 其餘未對應欄位（`unmapped`）
 

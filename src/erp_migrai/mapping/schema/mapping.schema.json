@@ -46,8 +46,8 @@
     },
     "conflict_kind": {
       "type": "string",
-      "description": "區分 mapping_conflict 是表級還是欄位級：`table` 時 column 為 null、candidates 是模型名稱清單；`column` 時 column 是實際來源欄位、candidates 是「模型.欄位」字串清單。",
-      "enum": ["table", "column"]
+      "description": "區分 mapping_conflict 是表級、欄位級還是目標級：`table` 時 column 為 null、candidates 是模型名稱清單；`column` 時 column 是實際來源欄位、candidates 是「模型.欄位」字串清單；`target` 時 column 為 null（跟 table 同理，這筆衝突不對應任何單一來源欄位），candidates 是互相搶同一個目標欄位的來源欄位名稱清單。",
+      "enum": ["table", "column", "target"]
     },
     "confidence": {
       "type": "integer",
@@ -133,12 +133,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["table", "column", "kind", "candidates", "reason"],
-      "description": "來源表或來源欄位對不上目標時的衝突紀錄。`kind` 決定 `column`／`candidates` 的意義：`kind == \"table\"` 時這是整張表對不上模型（或對到多個並列的模型），`column` 為 `null`，`candidates` 是互相並列的 Odoo **模型名稱**清單；`kind == \"column\"` 時表已經對到模型、但某個欄位對不上目標欄位，`column` 是實際的來源欄位名稱，`candidates` 是「`模型.欄位`」字串清單。",
+      "description": "來源表或來源欄位對不上目標時的衝突紀錄。`kind` 決定 `column`／`candidates` 的意義：`kind == \"table\"` 時這是整張表對不上模型（或對到多個並列的模型），`column` 為 `null`，`candidates` 是互相並列的 Odoo **模型名稱**清單；`kind == \"column\"` 時表已經對到模型、但某個欄位對不上目標欄位，`column` 是實際的來源欄位名稱，`candidates` 是「`模型.欄位`」字串清單；`kind == \"target\"` 時同一張來源表裡有一個以上的來源欄位都對應到同一個目標欄位，`column` 為 `null`（跟 `table` 同理，不對應任何單一來源欄位），`candidates` 是互相搶同一個目標欄位的**來源欄位名稱**清單。",
       "properties": {
         "table": { "type": "string" },
         "column": {
           "type": ["string", "null"],
-          "description": "來源欄位名稱；`kind == \"table\"` 時為 `null`——這是表級衝突，不對應任何單一來源欄位。"
+          "description": "來源欄位名稱；`kind == \"table\"` 或 `kind == \"target\"` 時為 `null`——這兩種都不對應任何單一來源欄位。"
         },
         "kind": { "$ref": "#/$defs/conflict_kind" },
         "candidates": { "type": "array", "items": { "type": "string" } },

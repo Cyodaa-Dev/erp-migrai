@@ -163,6 +163,15 @@ def test_case03_references_are_all_rule_declared():
     不同的事：ord_cust_no 的 DDL **有**宣告 FK（規則與 DDL 一致，
     不該發衝突）；ord_prod_no 的 DDL **刻意沒有**宣告（真實 T100 最常見的
     形狀，只能靠規則補）。兩者都要走得通。
+
+    🔴 Task 4.5 修訂：`conflicts == []` 這條斷言原本成立，是因為 map 階段
+    完全沒有檢查「同一個目標欄位被一個以上的來源欄位對應」——`ord_mast.
+    ord_no`（規則，confidence 100）與 `ord_mast.ord_cust_ref`（啟發式，
+    confidence 30）都對到 `sale.order.client_order_ref`，到了載入階段會
+    互相覆蓋，卻完全不出聲。昴君裁決在 map 階段新增這個檢查（`ConflictKind.
+    TARGET`）之後，case03 的 golden 這裡多出剛好一筆衝突，`conflicts == []`
+    不再成立，改為斷言這一筆衝突的具體內容，不能弱化成「至少有一筆」之類
+    的鬆散斷言。
     """
     mapping = json.loads(
         (CORPUS_ROOT / "case03_sales_order" / "expected" / "mapping.json").read_text(
@@ -181,7 +190,13 @@ def test_case03_references_are_all_rule_declared():
     assert prod_ref["ref_table"] == "prod_mast"
     assert prod_ref["ref_column"] == "prod_no"
 
-    assert mapping["conflicts"] == []
+    assert len(mapping["conflicts"]) == 1
+    conflict = mapping["conflicts"][0]
+    assert conflict["table"] == "ord_mast"
+    assert conflict["column"] is None
+    assert conflict["kind"] == "target"
+    assert conflict["candidates"] == ["ord_cust_ref", "ord_no"]
+    assert "sale.order.client_order_ref" in conflict["reason"]
 
 
 def test_case03_reports_unsupported_syntax_but_data_tables_are_complete():

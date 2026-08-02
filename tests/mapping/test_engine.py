@@ -195,6 +195,138 @@ def test_column_rule_pointing_to_different_model_than_table_is_conflict_and_fata
     assert log.has_fatal(Stage.MAP)
 
 
+def test_two_source_columns_ruled_to_same_target_field_produce_target_conflict(
+    tmp_path: Path,
+):
+    """Task 4.5（昴君裁決）：同一張來源表裡，兩個不同的來源欄位都命中規則、
+    對應到同一個目標欄位（`sale.order.client_order_ref`）——到了載入階段，
+    同一筆記錄的這個欄位會被後寫的覆蓋，使用者無從得知哪一個贏，這本質上
+    就是映射衝突，必須記進 `conflicts[]` 並發 `E-2001`。
+
+    兩筆 `FieldMapping` 仍然都要保留在 `mappings` 裡——衝突是「該用哪一個」
+    的裁決問題，不是任一筆本身算錯了，不能因為偵測到衝突就悄悄丟掉其中
+    一筆已經算出來的事實。
+    """
+    rules = RuleSet(
+        table_rules={"ord_mast": TableRule("ord_mast", "sale.order", "test#ord_mast")},
+        column_rules={
+            ("ord_mast", "ord_no"): ColumnRule(
+                source_table="ord_mast",
+                source_column="ord_no",
+                target_model="sale.order",
+                target_field="client_order_ref",
+                transform=Transform(kind=TransformKind.IDENTITY),
+                origin="test#ord_mast.ord_no",
+            ),
+            ("ord_mast", "ord_cust_ref"): ColumnRule(
+                source_table="ord_mast",
+                source_column="ord_cust_ref",
+                target_model="sale.order",
+                target_field="client_order_ref",
+                transform=Transform(kind=TransformKind.IDENTITY),
+                origin="test#ord_mast.ord_cust_ref",
+            ),
+        },
+    )
+    inventory = _inventory(
+        [_table("ord_mast", [("ord_no", "CHAR(16)"), ("ord_cust_ref", "VARCHAR(40)")])]
+    )
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, CATALOG, rules, event_log=log)
+
+    assert len(mapping.mappings) == 2
+    assert {fm.source.column for fm in mapping.mappings} == {"ord_no", "ord_cust_ref"}
+
+    assert len(mapping.conflicts) == 1
+    conflict = mapping.conflicts[0]
+    assert conflict.table == "ord_mast"
+    assert conflict.column is None
+    assert conflict.kind == ConflictKind.TARGET
+    assert conflict.candidates == ["ord_cust_ref", "ord_no"]  # 字典序，確定性
+    assert "sale.order.client_order_ref" in conflict.reason
+    assert "覆蓋" in conflict.reason
+
+    e2001_events = [e for e in log.events if e["error_code"] == "E-2001"]
+    assert len(e2001_events) == 1
+    assert log.has_fatal(Stage.MAP)
+
+    _validate_against_schema(mapping.to_dict())
+
+
+def test_target_conflict_spans_auto_and_needs_human_tiers_like_case03(tmp_path: Path):
+    """跨 tier 都要抓：這裡直接用內建 catalog／規則重現 corpus case03 實際
+    揭露的形狀——`ord_mast.ord_no` 命中規則（confidence 100／auto），
+    `ord_mast.ord_cust_ref` 沒有規則、落回名稱／型別啟發式
+    （confidence 30／needs_human），兩者都對到 `sale.order.client_order_ref`。
+    不能因為兩者信心層級不同就放過這組衝突。
+    """
+    inventory = _inventory(
+        [_table("ord_mast", [("ord_no", "CHAR(16)"), ("ord_cust_ref", "VARCHAR(40)")])]
+    )
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, CATALOG, RULES, event_log=log)
+
+    by_column = {fm.source.column: fm for fm in mapping.mappings}
+    assert by_column["ord_no"].tier == Tier.AUTO
+    assert by_column["ord_no"].confidence == 100
+    assert by_column["ord_cust_ref"].tier == Tier.NEEDS_HUMAN
+    assert by_column["ord_cust_ref"].confidence == 30
+    assert by_column["ord_no"].target.field == "client_order_ref"
+    assert by_column["ord_cust_ref"].target.field == "client_order_ref"
+
+    assert len(mapping.conflicts) == 1
+    conflict = mapping.conflicts[0]
+    assert conflict.kind == ConflictKind.TARGET
+    assert conflict.table == "ord_mast"
+    assert conflict.column is None
+    assert conflict.candidates == ["ord_cust_ref", "ord_no"]
+
+    e2001_events = [e for e in log.events if e["error_code"] == "E-2001"]
+    assert len(e2001_events) == 1
+    assert log.has_fatal(Stage.MAP)
+
+
+def test_two_different_source_tables_targeting_same_field_is_not_a_conflict(tmp_path: Path):
+    """只在同一張來源表內比對——不同來源表對到同一個 Odoo 欄位是正常的，
+    它們會變成不同的記錄，不該被誤報成 TARGET 衝突。"""
+    rules = RuleSet(
+        table_rules={
+            "tbl_a": TableRule("tbl_a", "res.partner", "test#tbl_a"),
+            "tbl_b": TableRule("tbl_b", "product.template", "test#tbl_b"),
+        },
+        column_rules={
+            ("tbl_a", "col_a"): ColumnRule(
+                source_table="tbl_a",
+                source_column="col_a",
+                target_model="res.partner",
+                target_field="name",
+                transform=Transform(kind=TransformKind.IDENTITY),
+                origin="test#tbl_a.col_a",
+            ),
+            ("tbl_b", "col_b"): ColumnRule(
+                source_table="tbl_b",
+                source_column="col_b",
+                target_model="product.template",
+                target_field="name",
+                transform=Transform(kind=TransformKind.IDENTITY),
+                origin="test#tbl_b.col_b",
+            ),
+        },
+    )
+    inventory = _inventory(
+        [_table("tbl_a", [("col_a", "CHAR(10)")]), _table("tbl_b", [("col_b", "CHAR(10)")])]
+    )
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, CATALOG, rules, event_log=log)
+
+    assert len(mapping.mappings) == 2
+    assert mapping.conflicts == []
+    assert not log.has_fatal(Stage.MAP)
+
+
 def test_two_catalog_fields_tied_at_same_confidence_produce_conflict_not_mapping(
     tmp_path: Path,
 ):
