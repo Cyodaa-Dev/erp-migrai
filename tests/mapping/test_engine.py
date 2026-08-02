@@ -1571,9 +1571,22 @@ def _ord_catalog_and_table_rule() -> tuple[dict[str, OdooModel], RuleSet]:
     return catalog, rules
 
 
-def test_foreign_key_without_column_rule_auto_produces_reference_transform(tmp_path: Path):
-    """行為契約第 2 條：規則沒宣告 transform，但欄位出現在 `foreign_keys` 的
-    `columns` 裡 → 自動產生 `reference`，`ref_table`／`ref_column` 取自 DDL。"""
+def test_foreign_key_target_field_not_many2one_lands_in_unmapped_not_reference(tmp_path: Path):
+    """事後修正（昴君裁決）：自動產生 `reference` 之前，先查 catalog 確認依
+    名稱／型別啟發式選出的目標欄位型別真的是 `many2one`。
+
+    這裡的 `x.ord` 只有一個欄位 `cust_no`，型別是 `char`——不是關聯欄位。
+    DDL 宣告 `ord_cust_no` 是外鍵，但目標模型上根本沒有對應的關聯欄位可以
+    承載這個外鍵關係，不能因為「有 FK」就硬把 `reference` 掛在一個字元欄位
+    上：那會產生一筆看起來合法、實則把外鍵原始碼（例如 `'C001'`）當成一般
+    值寫進 Odoo 欄位的語意錯誤輸出，到了 load 階段才會被拒絕，而錯誤訊息
+    離真正的原因（map 階段配錯對）很遠。
+
+    這正是 controller 實測重現的形狀的最小重現版本
+    （`ord_cust_no -> sale.order.client_order_ref`，型別 char，
+    confidence=12，needs_human）：欄位無規則、DDL 有 FK，但依啟發式選出的
+    目標欄位不是 many2one。這個欄位必須進 `unmapped`，且不出現在 `mappings`
+    裡，reason 要點名來源表與被參照表，讓人知道去 `rules/` 明確指定。"""
     catalog, rules = _ord_catalog_and_table_rule()
     table = _table(
         "ord_mast",
@@ -1587,17 +1600,17 @@ def test_foreign_key_without_column_rule_auto_produces_reference_transform(tmp_p
 
     mapping = build_mapping(inventory, catalog, rules, event_log=log)
 
-    assert len(mapping.mappings) == 1
-    fm = mapping.mappings[0]
-    assert fm.source.table == "ord_mast"
-    assert fm.source.column == "ord_cust_no"
-    assert fm.transform.kind is TransformKind.REFERENCE
-    assert fm.transform.ref_table == "cust_mast"
-    assert fm.transform.ref_column == "cust_no"
-    assert fm.reasons
-    assert any("來自 DDL 的外鍵宣告" in reason for reason in fm.reasons)
+    assert mapping.mappings == []
+    assert len(mapping.unmapped) == 1
+    unmapped_col = mapping.unmapped[0]
+    assert unmapped_col.table == "ord_mast"
+    assert unmapped_col.column == "ord_cust_no"
+    # reason 必須點名來源表與被參照表，且指向具體可動手的下一步（rules/）。
+    assert "ord_mast" in unmapped_col.reason
+    assert "cust_mast" in unmapped_col.reason
+    assert "many2one" in unmapped_col.reason
+    assert "rules" in unmapped_col.reason
     assert mapping.conflicts == []
-    assert mapping.unmapped == []
     assert not log.has_fatal(Stage.MAP)
 
 
