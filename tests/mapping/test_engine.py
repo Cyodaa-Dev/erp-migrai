@@ -1543,7 +1543,13 @@ def test_tied_field_candidates_are_sorted_regardless_of_catalog_definition_order
 
 
 # ---------------------------------------------------------------------------
-# Task 3：引擎從 DDL 的 `foreign_keys` 自動產生 `reference` transform
+# Task 3（修正後）：引擎不再從 DDL 的 `foreign_keys` 自動產生 `reference`
+# transform（原自動產生分支已證實是死碼：`typing_rules._with_relational`
+# 對 many2one／one2many／many2many 一律把 `type_score` 固定為 `0.0`，
+# `confidence = round(100 * name_score * type_score)` 因此恆為 0，
+# `best_confidence == 0` 在選出 `field_obj` 之前就早退，自動產生分支永遠
+# 走不到）。`foreign_keys` 現在只做兩件事：① 與規則宣告的 `reference`
+# 衝突時發 `E-2001`；② 讓沒有規則、最終進 `unmapped` 的外鍵欄位有具體理由。
 # ---------------------------------------------------------------------------
 
 
@@ -1571,28 +1577,43 @@ def _ord_catalog_and_table_rule() -> tuple[dict[str, OdooModel], RuleSet]:
     return catalog, rules
 
 
-def test_foreign_key_target_field_not_many2one_lands_in_unmapped_not_reference(tmp_path: Path):
-    """事後修正（昴君裁決）：自動產生 `reference` 之前，先查 catalog 確認依
-    名稱／型別啟發式選出的目標欄位型別真的是 `many2one`。
+def test_foreign_key_without_column_rule_lands_in_unmapped_with_specific_reason(tmp_path: Path):
+    """審查與控制者複驗證實：引擎永遠無法從 DDL 的 `foreign_keys` 自動產生
+    `reference`——`typing_rules._with_relational` 對 many2one 一律把
+    `type_score` 固定為 `0.0`，`confidence` 因此恆為 0，在選出 `field_obj`
+    之前就早退。控制者實測：來源欄位 `partner_id`、DDL 宣告 FK、目標
+    `sale.order.partner_id` 型別確實是 `many2one`，結果仍是
+    `mappings: []`、`unmapped: [('partner_id', 'catalog 中找不到型別相容且
+    名稱相近的欄位')]`——這條通用理由浪費了 DDL 已知的外鍵資訊。
 
-    這裡的 `x.ord` 只有一個欄位 `cust_no`，型別是 `char`——不是關聯欄位。
-    DDL 宣告 `ord_cust_no` 是外鍵，但目標模型上根本沒有對應的關聯欄位可以
-    承載這個外鍵關係，不能因為「有 FK」就硬把 `reference` 掛在一個字元欄位
-    上：那會產生一筆看起來合法、實則把外鍵原始碼（例如 `'C001'`）當成一般
-    值寫進 Odoo 欄位的語意錯誤輸出，到了 load 階段才會被拒絕，而錯誤訊息
-    離真正的原因（map 階段配錯對）很遠。
+    這裡用最小案例重現同一個形狀：`x.ord` 模型上有一個叫 `partner_id`、
+    型別 `many2one` 的欄位；來源欄位同名 `partner_id`（name_score=1.0），
+    但 `type_score(CHAR, many2one)` 固定為 `0.0`，confidence 恆為 0。
+    DDL 宣告這個欄位是外鍵、參照 `cust_mast.cust_no`，且沒有規則。
 
-    這正是 controller 實測重現的形狀的最小重現版本
-    （`ord_cust_no -> sale.order.client_order_ref`，型別 char，
-    confidence=12，needs_human）：欄位無規則、DDL 有 FK，但依啟發式選出的
-    目標欄位不是 many2one。這個欄位必須進 `unmapped`，且不出現在 `mappings`
-    裡，reason 要點名來源表與被參照表，讓人知道去 `rules/` 明確指定。"""
-    catalog, rules = _ord_catalog_and_table_rule()
+    昴君裁決：這種情況必須進 `unmapped`，理由不可以是通用的「catalog 中
+    找不到型別相容且名稱相近的欄位」，必須點名這是 DDL 宣告的外鍵、參照
+    哪張表哪個欄位，並指向具體可動手的下一步（`rules/`）。"""
+    catalog = {
+        "x.ord": OdooModel(
+            name="x.ord",
+            description="測試用",
+            fields={
+                "partner_id": OdooField(
+                    name="partner_id", type="many2one", required=False, module="base", help="h"
+                )
+            },
+        )
+    }
+    rules = RuleSet(
+        table_rules={"ord_mast": TableRule("ord_mast", "x.ord", "test#ord_mast")},
+        column_rules={},
+    )
     table = _table(
         "ord_mast",
-        [("ord_cust_no", "CHAR(10)")],
+        [("partner_id", "CHAR(10)")],
         foreign_keys=[
-            {"columns": ["ord_cust_no"], "ref_table": "cust_mast", "ref_columns": ["cust_no"]}
+            {"columns": ["partner_id"], "ref_table": "cust_mast", "ref_columns": ["cust_no"]}
         ],
     )
     inventory = _inventory([table])
@@ -1604,12 +1625,13 @@ def test_foreign_key_target_field_not_many2one_lands_in_unmapped_not_reference(t
     assert len(mapping.unmapped) == 1
     unmapped_col = mapping.unmapped[0]
     assert unmapped_col.table == "ord_mast"
-    assert unmapped_col.column == "ord_cust_no"
-    # reason 必須點名來源表與被參照表，且指向具體可動手的下一步（rules/）。
-    assert "ord_mast" in unmapped_col.reason
+    assert unmapped_col.column == "partner_id"
+    # reason 必須點名被參照的表與欄位，且指向具體可動手的下一步（rules/），
+    # 不能是通用的「catalog 中找不到型別相容且名稱相近的欄位」原封不動。
     assert "cust_mast" in unmapped_col.reason
-    assert "many2one" in unmapped_col.reason
+    assert "cust_no" in unmapped_col.reason
     assert "rules" in unmapped_col.reason
+    assert unmapped_col.reason != "catalog 中找不到型別相容且名稱相近的欄位"
     assert mapping.conflicts == []
     assert not log.has_fatal(Stage.MAP)
 

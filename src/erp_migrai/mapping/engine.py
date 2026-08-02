@@ -76,36 +76,30 @@ _MULTI_COLUMN_FK_UNSUPPORTED_REASON = (
 )
 
 
-# 事後修正（昴君裁決）：`typing_rules.type_score` 對 many2one／one2many／
-# many2many 一律回 0.0（計劃 2 的既有設計，因為 map 階段解析不了 id）——這個
-# 設計本身沒有錯，但代表依名稱／型別啟發式選出的「最高分」目標欄位，結構上
-# 不可能是關聯欄位，只可能是某個字元／文字欄位剛好名稱相近。如果這個來源
-# 欄位又被 DDL 宣告成外鍵，上面兩件事疊在一起就會悄悄產生語意錯誤的輸出：
-# 把被參照表（例如 `cust_mast`）的值硬塞進一個字串欄位，實際解析必須留到
-# load 階段才做，那裡送出的欄位路徑必然被 Odoo 拒絕，而錯誤看起來離真正
-# 的原因（map 階段配錯對）很遠。跟多欄外鍵一樣，這種欄位不能悄悄落回
-# identity 或字元欄位的 FieldMapping，必須在自動產生 reference 之前先查
-# catalog 確認目標欄位型別真的是 many2one；不是的話明確進 unmapped，理由
-# 點名來源表、被參照表、以及依啟發式選出的（型別不符的）欄位。
+# 修正（審查與控制者複驗定案）：Task 3 原本讓引擎從 DDL 的 `foreign_keys`
+# 自動產生 `reference` transform，但這條分支證實是永遠打不開的死碼——
+# `typing_rules._with_relational` 對 many2one／one2many／many2many 三種
+# 關聯型別，不論來源型別家族，一律把 `type_score` 固定為 `0.0`（計劃 2 的
+# 既有設計，理由是 map 階段解析不了 Odoo id，這個設計本身沒有錯）。
+# `_process_column` 的 `confidence = round(100 * name_score * type_score)`
+# 因此對任何 many2one 目標欄位恆為 `0`，而 `best_confidence == 0` 會在選出
+# `field_obj` 之前就早退，走 `_NO_FIELD_MATCH_REASON`。所以「自動產生
+# reference」這條分支在真實情境（目標欄位是 many2one）下永遠走不到；就算
+# 真的走到（例如測試刻意把目標欄位型別設成非 many2one 的 char），產生的
+# `reference` 也是語意錯誤的——把外鍵值硬塞進一個非關聯欄位。靠名稱相似度
+# 自動配對外鍵本來就不可靠（真實鼎新 T100 的欄位叫 `ord_cust_no`，Odoo 叫
+# `partner_id`，名稱毫無關係），這條路不值得留，已整段拿掉。
 #
-# 只管「自動產生」這條路徑——規則檔明確宣告 `kind: reference` 時不套用這個
-# 守衛：那是人明確教過的事實，若目標欄位型別不對，是規則本身的問題，屬於
-# `rules_loader`／未來任務的範疇，這裡不改動規則路徑的行為。
-def _fk_target_not_many2one_reason(
-    table_name: str,
-    col_name: str,
-    ref_table: str,
-    ref_column: str,
-    target_model: str,
-    field_name: str,
-    field_type: str,
-) -> str:
+# DDL 的 `foreign_keys` 資訊仍然保留兩個用途：① `_apply_column_rule` 裡
+# 規則宣告 `reference` 與 DDL 外鍵不一致時發 `E-2001`（不變）；②下面
+# `_fk_declared_no_match_reason`：讓沒有規則、最終進 `unmapped` 的外鍵欄位
+# 有具體理由，而不是浪費 DDL 已知的資訊、丟出一句通用的「找不到型別相容且
+# 名稱相近的欄位」。
+def _fk_declared_no_match_reason(ref_table: str, ref_column: str) -> str:
     return (
-        f"欄位 `{table_name}.{col_name}` 在 DDL 中宣告為外鍵，參照 "
-        f"`{ref_table}.{ref_column}`；但目標模型 `{target_model}` 上依名稱／型別"
-        f"啟發式選出的欄位 `{field_name}`（型別 `{field_type}`）不是 many2one "
-        "關聯欄位，無法承載這個外鍵關係——若這是有效的關聯，請在 rules/ 中為這個"
-        "欄位明確指定 reference transform"
+        f"{_NO_FIELD_MATCH_REASON}；但這是 DDL 宣告的外鍵，參照 "
+        f"`{ref_table}.{ref_column}`，若這是有效的關聯，請在 rules/ 中明確指定"
+        "這個欄位的 reference transform"
     )
 
 
@@ -877,12 +871,17 @@ def _process_column(
         )
         return
 
+    # 理由具體化（審查與控制者複驗定案）：這個欄位如果有 DDL 外鍵宣告，
+    # 「找不到相容欄位」的通用理由會浪費 DDL 已知的資訊——改用
+    # `_fk_declared_no_match_reason` 點名被參照的表與欄位，並指向 rules/。
+    no_match_reason = (
+        _fk_declared_no_match_reason(*fk_ref) if fk_ref is not None else _NO_FIELD_MATCH_REASON
+    )
+
     model = catalog.get(target_model)
     if model is None or not model.fields:
         unmapped_out.append(
-            UnmappedColumn(
-                table=table_name, column=col_name, type=col_type, reason=_NO_FIELD_MATCH_REASON
-            )
+            UnmappedColumn(table=table_name, column=col_name, type=col_type, reason=no_match_reason)
         )
         return
 
@@ -896,9 +895,7 @@ def _process_column(
     best_confidence = max(confidence for _, confidence, _, _ in scored)
     if best_confidence == 0:
         unmapped_out.append(
-            UnmappedColumn(
-                table=table_name, column=col_name, type=col_type, reason=_NO_FIELD_MATCH_REASON
-            )
+            UnmappedColumn(table=table_name, column=col_name, type=col_type, reason=no_match_reason)
         )
         return
 
@@ -922,50 +919,13 @@ def _process_column(
     _, _, n_reason, t_reason = next(entry for entry in scored if entry[0] == field_name)
     field_obj = model.fields[field_name]
 
-    # 事後修正（昴君裁決）：自動產生 reference 之前，先確認依啟發式選出的
-    # 目標欄位型別真的是 many2one（見上面 `_fk_target_not_many2one_reason`
-    # 的模組級說明）。不是的話，這個來源欄位在目標模型上根本沒有對應的
-    # 關聯欄位可以承載這個外鍵關係，不能因為「有 FK」就硬把 reference 掛在
-    # 一個非關聯欄位上，明確進 unmapped，不產生 FieldMapping。
-    if fk_ref is not None and field_obj.type != "many2one":
-        ref_table, ref_column = fk_ref
-        unmapped_out.append(
-            UnmappedColumn(
-                table=table_name,
-                column=col_name,
-                type=col_type,
-                reason=_fk_target_not_many2one_reason(
-                    table_name,
-                    col_name,
-                    ref_table,
-                    ref_column,
-                    target_model,
-                    field_name,
-                    field_obj.type,
-                ),
-            )
-        )
-        return
-
     reasons = [n_reason, t_reason]
     if heuristic_note:
         reasons.append(heuristic_note)
 
-    # Task 3 行為契約第 2 條：規則沒宣告 transform，但這個欄位出現在某條單欄
-    # 外鍵的 `columns` 裡（`is_multi_column_fk` 上面已經排除多欄的情形），且
-    # 上面的守衛已確認目標欄位型別是 many2one——自動產生 `reference`，取代
-    # 預設的 `identity`。`ref_table`／`ref_column` 只承載「參照哪張表的哪個
-    # 欄位」這個事實，實際解析是載入階段的工作。
-    if fk_ref is not None:
-        ref_table, ref_column = fk_ref
-        transform = Transform(
-            kind=TransformKind.REFERENCE, ref_table=ref_table, ref_column=ref_column
-        )
-        reasons.append(
-            f"transform 為 reference：來自 DDL 的外鍵宣告，參照 `{ref_table}.{ref_column}`"
-        )
-    else:
-        transform = Transform(kind=TransformKind.IDENTITY)
+    # 不再從 `fk_ref` 自動產生 `reference`（見模組層級「修正」註解說明原因）
+    # ——沒有規則時一律用 `identity`，跟 Task 3 之前的行為一致。
+    transform = Transform(kind=TransformKind.IDENTITY)
 
     confidence, tier = _propagate_table_uncertainty(best_confidence, heuristic_confidence, reasons)
     mappings_out.append(
