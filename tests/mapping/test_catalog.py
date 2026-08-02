@@ -19,10 +19,16 @@ from erp_migrai.mapping.catalog import (
     load_catalog,
 )
 
-EXPECTED_MODELS = {"res.partner", "product.template", "sale.order", "sale.order.line"}
+EXPECTED_MODELS = {
+    "res.partner",
+    "product.template",
+    "product.product",
+    "sale.order",
+    "sale.order.line",
+}
 
 
-def test_builtin_catalog_loads_and_has_four_models():
+def test_builtin_catalog_loads_and_has_five_models():
     catalog = load_catalog()
     assert set(catalog) == EXPECTED_MODELS
     for name, model in catalog.items():
@@ -54,6 +60,43 @@ def test_res_partner_rank_fields_module_is_account_not_base():
     supplier_rank = catalog["res.partner"].fields["supplier_rank"]
     assert customer_rank.module == "account"
     assert supplier_rank.module == "account"
+
+
+def test_product_product_exists_with_expected_fields():
+    """catalog 必須含 product.product，且欄位集合與型別符合預期。
+
+    這條測試守的是 Task 4 的規則檔：sale_order.yaml 的 target 指到
+    product.product 的欄位，catalog 少一個欄位規則檔就會在載入時炸掉。
+    """
+    catalog = load_catalog()
+    model = catalog["product.product"]
+    assert set(model.fields) == {
+        "name",
+        "default_code",
+        "barcode",
+        "list_price",
+        "standard_price",
+        "active",
+    }
+    assert model.fields["name"].type == "char"
+    assert model.fields["name"].required is True
+    assert model.fields["list_price"].type == "float"
+    assert model.fields["default_code"].module == "product"
+
+
+def test_sale_order_line_required_flags_match_odoo_source():
+    """釘住兩處與 Odoo 17.0 原始碼對照過的 required 判定。
+
+    這條測試的存在理由是：這兩個值在 2026-07-29 之前是錯的，且錯的方向會
+    讓載入階段在寫入時才用看不懂的錯誤炸出來。把它們釘成測試，是為了讓
+    「有人憑印象改回去」這件事會紅燈。
+    """
+    catalog = load_catalog()
+    fields = catalog["sale.order.line"].fields
+    # sale_order_line.py:115-119 —— required=True
+    assert fields["product_uom_qty"].required is True
+    # sale_order_line.py:80-84 —— 欄位定義沒有 required=True
+    assert fields["product_id"].required is False
 
 
 def test_every_model_has_at_least_one_required_field():

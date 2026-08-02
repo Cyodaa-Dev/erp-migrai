@@ -56,6 +56,50 @@
 #      float、module 確認是 product：
 #      https://raw.githubusercontent.com/odoo/odoo/17.0/addons/product/models/product_template.py
 #      第 84 行（weight）與第 87 行（volume），皆為 `fields.Float(...)`。
+#   5. product.product 的六個欄位，2026-07-29 逐行核對
+#      addons/product/models/product_product.py 與
+#      addons/product/models/product_template.py（17.0 分支）：
+#      https://raw.githubusercontent.com/odoo/odoo/17.0/addons/product/models/product_product.py
+#      https://raw.githubusercontent.com/odoo/odoo/17.0/addons/product/models/product_template.py
+#        - name：委派自 product.template，product_template.py 第 40 行
+#          `name = fields.Char('Name', index='trigram', required=True, translate=True)`；
+#          required=True。
+#        - list_price：委派自 product.template，product_template.py 第 71 行
+#          `list_price = fields.Float('Sales Price', default=1.0, digits='Product Price', ...)`；
+#          非 required。
+#        - default_code：product_product.py 第 34 行
+#          `default_code = fields.Char('Internal Reference', index=True)`；非 required。
+#        - barcode：product_product.py 第 44 行
+#          `barcode = fields.Char('Barcode', copy=False, index='btree_not_null', ...)`；
+#          非 required。
+#        - standard_price：product_product.py 第 53 行
+#          `standard_price = fields.Float('Cost', company_dependent=True, digits='Product Price',
+#          groups="base.group_user", ...)`；非 required。
+#        - active：product_product.py 第 38 行
+#          `active = fields.Boolean('Active', default=True, ...)`；非 required。
+#
+#      兩個必須知道的陷阱：
+#        (a) product.product 是**委派繼承**：product_product.py 第 18 行
+#            `_inherits = {'product.template': 'product_tmpl_id'}`。所以 name 與
+#            list_price 不是 product.product 自己宣告的欄位，而是透過委派寫進
+#            product.template；寫得進去，但寫入機制與 product.product 自身欄位
+#            不同（詳見下方 product.product 模型 name／list_price 欄位的 help）。
+#        (b) product.product 自己另外有一個 `lst_price`（product_product.py 第
+#            29 行，compute + inverse）——**不要用它**，要用委派來的 `list_price`。
+#            兩者很容易挑錯，這裡刻意記下來避免下一個人踩到。
+#
+# ----------------------------------------------------------------------------
+#
+# `required` 的語意（釘死，避免每次寫欄位時各自解讀）：
+#
+# `required: true` 代表「不提供這個欄位就無法成功建立記錄」，不論這個限制來自
+# `fields.required=True`、SQL constraint、或 `@api.constrains`。選這個語意是
+# 因為 catalog 的消費者是載入階段，它關心的是「不填會不會失敗」，而不是 Odoo
+# 內部用哪種機制表達這件事。
+#
+# 依此語意：res.partner.name 標 `required: true` 是**正確的**（欄位本身不
+# required，但 `check_name` 這條 SQL constraint 讓 contact 型別實質必填，見
+# `odoo/addons/base/models/res_partner.py` 第 209、304 行）。
 #
 # ----------------------------------------------------------------------------
 models:
@@ -222,6 +266,58 @@ models:
         module: product
         help: "單位體積，用於物流／運費估算。"
 
+  product.product:
+    description: >-
+      產品變體（variant）。sale.order.line.product_id 指向的是這個模型，不是
+      product.template。直接建立 product.product 時 Odoo 會自動補上對應的
+      product.template，因此來源系統的品號主檔對到這裡，可以避免載入階段必須
+      內建「建完 template 要讀回 product_variant_id」這種 Odoo 特定模型的內部知識。
+    fields:
+      name:
+        type: char
+        required: true
+        module: product
+        help: >-
+          產品名稱。委派自 product.template（`_inherits = {'product.template':
+          'product_tmpl_id'}`，product_product.py 第 18 行）：這個欄位不是
+          product.product 自己宣告的，是透過委派寫進 product.template（見
+          product_template.py 第 40 行，required=True）。委派欄位寫得進去，
+          但實際存放位置是 product.template，不是 product.product 自身。
+      default_code:
+        type: char
+        required: false
+        module: product
+        help: "內部品號／料號，通常放來源系統（T100）的原始品號。product_product.py 第 34 行。"
+      barcode:
+        type: char
+        required: false
+        module: product
+        help: "條碼（EAN/UPC 等）。product_product.py 第 44 行。"
+      list_price:
+        type: float
+        required: false
+        module: product
+        help: >-
+          建議售價（銷售基準價）。與 name 一樣是委派自 product.template 的欄位
+          （product_template.py 第 71 行，非 required），不是 product.product
+          自己宣告的欄位。**不要跟 product.product 自己的 lst_price
+          （product_product.py 第 29 行，compute + inverse）搞混**——lst_price
+          是另一個唯讀計算欄位，不是這個欄位，寫入時不能用它取代 list_price。
+      standard_price:
+        type: float
+        required: false
+        module: product
+        help: >-
+          成本價。product_product.py 第 53 行：`company_dependent=True`（值實際
+          存在 ir.property，不是一般欄位）且 `groups="base.group_user"`
+          （需要對應的存取群組才讀寫得到）。透過匯入寫入時的實際行為
+          （是否需要額外處理 company_dependent 儲存方式）待 CI 實測確認。
+      active:
+        type: boolean
+        required: false
+        module: product
+        help: "是否為有效（未封存）的產品。product_product.py 第 38 行。"
+
   sale.order:
     description: >-
       銷售訂單單頭。T100 的銷貨訂單主檔對應到這個模型，明細行在
@@ -273,9 +369,12 @@ models:
         help: "所屬的銷售訂單，指向 sale.order。"
       product_id:
         type: many2one
-        required: true
+        required: false
         module: sale
-        help: "此明細行的產品，指向 product.product。"
+        help: >-
+          此明細行的產品，指向 product.product。Odoo 17.0 的欄位定義未標
+          required（sale_order_line.py 第 80～84 行）；是否真的可以省略，
+          待 CI 實測確認。
       name:
         type: text
         required: true
@@ -283,9 +382,11 @@ models:
         help: "此明細行顯示的說明文字（通常預設帶入產品名稱，可人工覆寫）。"
       product_uom_qty:
         type: float
-        required: false
+        required: true
         module: sale
-        help: "訂購數量（以 product_uom_id 為單位）。"
+        help: >-
+          訂購數量（以 product_uom_id 為單位）。sale_order_line.py 第
+          115～119 行：`compute + precompute + default=1.0` 的 required 欄位。
       price_unit:
         type: float
         required: false
