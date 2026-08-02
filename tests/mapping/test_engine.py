@@ -53,7 +53,9 @@ def _log(tmp_path: Path) -> EventLog:
     return EventLog(path=tmp_path / "events.jsonl", run_id="test")
 
 
-def _table(name: str, columns: list[tuple[str, str]]) -> dict:
+def _table(
+    name: str, columns: list[tuple[str, str]], *, foreign_keys: list[dict] | None = None
+) -> dict:
     return {
         "name": name,
         "columns": [
@@ -61,7 +63,7 @@ def _table(name: str, columns: list[tuple[str, str]]) -> dict:
             for col_name, col_type in columns
         ],
         "primary_key": [],
-        "foreign_keys": [],
+        "foreign_keys": foreign_keys if foreign_keys is not None else [],
     }
 
 
@@ -1538,3 +1540,182 @@ def test_tied_field_candidates_are_sorted_regardless_of_catalog_definition_order
 
     assert len(mapping.conflicts) == 1
     assert mapping.conflicts[0].candidates == ["x.y.no_a", "x.y.no_b"]
+
+
+# ---------------------------------------------------------------------------
+# Task 3：引擎從 DDL 的 `foreign_keys` 自動產生 `reference` transform
+# ---------------------------------------------------------------------------
+
+
+def _ord_catalog_and_table_rule() -> tuple[dict[str, OdooModel], RuleSet]:
+    """本節共用的最小 catalog／table rule：一個叫 `x.ord` 的測試模型，只有
+    一個欄位 `cust_no`（型別 `char`），`ord_mast` 表命中它的 table rule。
+    `ord_cust_no` 對 `cust_no` 正規化後 token 是子集關係（`{order, customer,
+    number}` ⊇ `{customer, number}`），name_score=0.8；型別皆為 char，
+    type_score=1.0；confidence = round(100 * 0.8 * 1.0) = 80。"""
+    catalog = {
+        "x.ord": OdooModel(
+            name="x.ord",
+            description="測試用",
+            fields={
+                "cust_no": OdooField(
+                    name="cust_no", type="char", required=False, module="base", help="h"
+                )
+            },
+        )
+    }
+    rules = RuleSet(
+        table_rules={"ord_mast": TableRule("ord_mast", "x.ord", "test#ord_mast")},
+        column_rules={},
+    )
+    return catalog, rules
+
+
+def test_foreign_key_without_column_rule_auto_produces_reference_transform(tmp_path: Path):
+    """行為契約第 2 條：規則沒宣告 transform，但欄位出現在 `foreign_keys` 的
+    `columns` 裡 → 自動產生 `reference`，`ref_table`／`ref_column` 取自 DDL。"""
+    catalog, rules = _ord_catalog_and_table_rule()
+    table = _table(
+        "ord_mast",
+        [("ord_cust_no", "CHAR(10)")],
+        foreign_keys=[
+            {"columns": ["ord_cust_no"], "ref_table": "cust_mast", "ref_columns": ["cust_no"]}
+        ],
+    )
+    inventory = _inventory([table])
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, catalog, rules, event_log=log)
+
+    assert len(mapping.mappings) == 1
+    fm = mapping.mappings[0]
+    assert fm.source.table == "ord_mast"
+    assert fm.source.column == "ord_cust_no"
+    assert fm.transform.kind is TransformKind.REFERENCE
+    assert fm.transform.ref_table == "cust_mast"
+    assert fm.transform.ref_column == "cust_no"
+    assert fm.reasons
+    assert any("來自 DDL 的外鍵宣告" in reason for reason in fm.reasons)
+    assert mapping.conflicts == []
+    assert mapping.unmapped == []
+    assert not log.has_fatal(Stage.MAP)
+
+
+def test_column_rule_reference_takes_priority_when_ddl_has_no_foreign_key(tmp_path: Path):
+    """行為契約第 1 條：規則明確宣告了 transform，即使該欄位沒有 DDL 外鍵，
+    也用規則的值——這裡順便驗證「規則優先」在完全沒有 DDL FK 時也成立。"""
+    catalog, table_rules_holder = _ord_catalog_and_table_rule()
+    rules = RuleSet(
+        table_rules=table_rules_holder.table_rules,
+        column_rules={
+            ("ord_mast", "ord_cust_no"): ColumnRule(
+                source_table="ord_mast",
+                source_column="ord_cust_no",
+                target_model="x.ord",
+                target_field="cust_no",
+                transform=Transform(
+                    kind=TransformKind.REFERENCE, ref_table="other_tbl", ref_column="other_col"
+                ),
+                origin="test#ord_mast.ord_cust_no",
+            )
+        },
+    )
+    table = _table("ord_mast", [("ord_cust_no", "CHAR(10)")])  # 無 foreign_keys
+    inventory = _inventory([table])
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, catalog, rules, event_log=log)
+
+    assert len(mapping.mappings) == 1
+    fm = mapping.mappings[0]
+    assert fm.transform.kind is TransformKind.REFERENCE
+    assert fm.transform.ref_table == "other_tbl"
+    assert fm.transform.ref_column == "other_col"
+    assert mapping.conflicts == []
+    assert mapping.unmapped == []
+    assert not log.has_fatal(Stage.MAP)
+
+
+def test_column_rule_reference_conflicts_with_ddl_foreign_key_emits_e2001(tmp_path: Path):
+    """衝突條件：規則宣告了 `reference`，DDL 也宣告了同一欄位的 FK，但
+    `ref_table` 不一致——必須發 `E-2001`，記進 `conflicts`，不能挑一邊猜。"""
+    catalog, table_rules_holder = _ord_catalog_and_table_rule()
+    rules = RuleSet(
+        table_rules=table_rules_holder.table_rules,
+        column_rules={
+            ("ord_mast", "ord_cust_no"): ColumnRule(
+                source_table="ord_mast",
+                source_column="ord_cust_no",
+                target_model="x.ord",
+                target_field="cust_no",
+                transform=Transform(
+                    kind=TransformKind.REFERENCE, ref_table="a_tbl", ref_column="a_col"
+                ),
+                origin="test#ord_mast.ord_cust_no",
+            )
+        },
+    )
+    table = _table(
+        "ord_mast",
+        [("ord_cust_no", "CHAR(10)")],
+        foreign_keys=[{"columns": ["ord_cust_no"], "ref_table": "b_tbl", "ref_columns": ["b_col"]}],
+    )
+    inventory = _inventory([table])
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, catalog, rules, event_log=log)
+
+    assert mapping.mappings == []
+    assert len(mapping.conflicts) == 1
+    conflict = mapping.conflicts[0]
+    assert conflict.table == "ord_mast"
+    assert conflict.column == "ord_cust_no"
+    assert conflict.kind is ConflictKind.COLUMN
+    # 訊息要同時點名規則的 origin 與 DDL 的宣告內容。
+    assert "test#ord_mast.ord_cust_no" in conflict.reason
+    assert "a_tbl" in conflict.reason
+    assert "a_col" in conflict.reason
+    assert "b_tbl" in conflict.reason
+    assert "b_col" in conflict.reason
+
+    e2001_events = [e for e in log.events if e["error_code"] == "E-2001"]
+    assert len(e2001_events) == 1
+    assert log.has_fatal(Stage.MAP)
+
+
+def test_multi_column_foreign_key_lands_in_unmapped_not_identity(tmp_path: Path):
+    """`columns` 長度 > 1 的 FK，MVP 不自動產生 `reference`——無法用單一欄位
+    的值組出被參照記錄的完整 external_id。這兩欄必須進 `unmapped`，附明確
+    reason（含「MVP」與「複合」），絕對不能悄悄落回 `identity`：那會把外鍵
+    原始碼當成一般值寫進 Odoo 的整數關聯欄位，是安靜的、格式合法但語意完全
+    錯誤的輸出。"""
+    catalog, table_rules_holder = _ord_catalog_and_table_rule()
+    rules = RuleSet(table_rules=table_rules_holder.table_rules, column_rules={})
+    table = _table(
+        "ord_mast",
+        [("ord_cust_no", "CHAR(10)"), ("ord_branch_no", "CHAR(4)")],
+        foreign_keys=[
+            {
+                "columns": ["ord_cust_no", "ord_branch_no"],
+                "ref_table": "cust_mast",
+                "ref_columns": ["cust_no", "branch_no"],
+            }
+        ],
+    )
+    inventory = _inventory([table])
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, catalog, rules, event_log=log)
+
+    assert mapping.mappings == []
+    assert {u.column for u in mapping.unmapped} == {"ord_cust_no", "ord_branch_no"}
+    assert len(mapping.unmapped) == 2
+    for unmapped_col in mapping.unmapped:
+        assert "MVP" in unmapped_col.reason
+        assert "複合" in unmapped_col.reason
+    assert mapping.conflicts == []
+    assert not any(
+        fm.transform.kind is TransformKind.IDENTITY
+        and fm.source.column in {"ord_cust_no", "ord_branch_no"}
+        for fm in mapping.mappings
+    )

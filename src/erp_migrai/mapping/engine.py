@@ -64,6 +64,17 @@ _NO_FIELD_MATCH_REASON = "catalog 中找不到型別相容且名稱相近的欄�
 # catalog 欄位可以比對它，所以直接進 unmapped，理由明講缺陷本身。
 _MALFORMED_COLUMN_NAME_REASON = "欄位名稱缺失或不是字串，無法比對"
 
+# Task 3：多欄（複合）外鍵所屬的欄位。MVP 版本不自動產生 reference transform
+# ——無法只靠單一欄位的值組出被參照記錄完整的 external_id。勉強套用會把外鍵
+# 原始碼（例如 `'C001'`）當成一般值寫進 Odoo 的整數關聯欄位，是安靜的、格式
+# 合法但語意完全錯誤的輸出，本專案第一原則明確禁止這種行為，所以這種欄位
+# 一律進 unmapped，不悄悄落回 identity。
+_MULTI_COLUMN_FK_UNSUPPORTED_REASON = (
+    "此欄位屬於一個多欄（複合）外鍵，MVP 版本尚不支援自動產生 reference "
+    "transform（無法只靠單一欄位的值組出被參照記錄完整的 external_id）；"
+    "如需比對，請在規則檔中手動指定這個欄位的 transform"
+)
+
 # 覆蓋率低於此門檻（百分比）就發 E-2002；spec §「覆蓋率」明訂為 80。
 _COVERAGE_WARN_THRESHOLD = 80
 
@@ -437,6 +448,56 @@ def _normalize_columns(columns_raw: Any) -> tuple[list[tuple[str, str]], list[tu
     return valid, malformed
 
 
+def _normalize_foreign_keys(
+    foreign_keys_raw: Any,
+) -> tuple[dict[str, tuple[str, str]], set[str]]:
+    """把一張表的 `foreign_keys` 原始值整理成
+    `(單欄位 → (ref_table, ref_column) 對照, 多欄外鍵涉及的欄位集合)`。
+
+    第一個回傳值涵蓋**所有**外鍵（不論欄位數），依欄位在 `columns` 陣列中的
+    位置對到 `ref_columns` 同一位置——這是給規則衝突檢查用的：即使某個欄位
+    屬於多欄外鍵，只要規則宣告了它的 `reference`，仍然要能比對規則與 DDL
+    是否一致（行為契約的衝突條件沒有限定只適用單欄外鍵）。
+
+    第二個回傳值只收「屬於某條 `columns` 長度 > 1 的外鍵」的欄位名稱——呼叫
+    端用它決定：沒有規則時，這個欄位要被強制送進 `unmapped`（MVP 不自動對
+    多欄外鍵產生 reference），而不是悄悄落回 identity 把外鍵原始碼寫進整數
+    關聯欄位。
+
+    對任何畸形輸入（不是 list、外鍵項目不是 dict、`columns`／`ref_columns`
+    長度不一致或缺失、內含非字串元素）一律安全跳過該筆外鍵，不拋出——與
+    `_normalize_columns` 的防禦原則一致：inventory 已經過 schema 驗證，這裡
+    只是再做一次最小限度的防禦。同一個欄位若出現在一條以上的外鍵裡（schema
+    沒有明文禁止），保留第一次遇到的對照，讓行為對輸入順序保持決定性。
+    """
+    ref_by_column: dict[str, tuple[str, str]] = {}
+    multi_column_columns: set[str] = set()
+
+    if not isinstance(foreign_keys_raw, list):
+        return ref_by_column, multi_column_columns
+
+    for fk in foreign_keys_raw:
+        if not isinstance(fk, dict):
+            continue
+        columns = fk.get("columns")
+        ref_table = fk.get("ref_table")
+        ref_columns = fk.get("ref_columns")
+        if not isinstance(columns, list) or not isinstance(ref_columns, list):
+            continue
+        if not isinstance(ref_table, str) or len(columns) != len(ref_columns):
+            continue
+
+        is_multi_column = len(columns) > 1
+        for col, ref_col in zip(columns, ref_columns, strict=True):
+            if not isinstance(col, str) or not isinstance(ref_col, str):
+                continue
+            if is_multi_column:
+                multi_column_columns.add(col)
+            ref_by_column.setdefault(col, (ref_table, ref_col))
+
+    return ref_by_column, multi_column_columns
+
+
 def _process_table(
     table_entry: Any,
     catalog: dict[str, OdooModel],
@@ -466,6 +527,9 @@ def _process_table(
         )
 
     columns, malformed_columns = _normalize_columns(table_entry.get("columns"))
+    fk_ref_by_column, multi_column_fk_columns = _normalize_foreign_keys(
+        table_entry.get("foreign_keys")
+    )
 
     for display_name, col_type in malformed_columns:
         unmapped_out.append(
@@ -515,6 +579,8 @@ def _process_table(
             conflicts_out,
             heuristic_note,
             heuristic_confidence,
+            fk_ref_by_column.get(col_name),
+            col_name in multi_column_fk_columns,
         )
 
 
@@ -741,6 +807,8 @@ def _process_column(
     conflicts_out: list[MappingConflict],
     heuristic_note: str | None,
     heuristic_confidence: int | None,
+    fk_ref: tuple[str, str] | None,
+    is_multi_column_fk: bool,
 ) -> None:
     column_rule = rules.column_rules.get((table_name, col_name))
     if column_rule is not None:
@@ -755,6 +823,23 @@ def _process_column(
             conflicts_out,
             heuristic_note,
             heuristic_confidence,
+            fk_ref,
+        )
+        return
+
+    # Task 3 行為契約：規則沒宣告 transform、但這個欄位屬於一條多欄（複合）
+    # 外鍵——MVP 不自動產生 reference（無法只靠單一欄位的值組出被參照記錄
+    # 完整的 external_id）。直接進 unmapped，不能讓它繼續往下走到底下的
+    # 名稱／型別啟發式，那會產生一筆看起來合法、實則把外鍵原始碼當成一般值
+    # 寫進 Odoo 整數關聯欄位的 identity FieldMapping。
+    if is_multi_column_fk:
+        unmapped_out.append(
+            UnmappedColumn(
+                table=table_name,
+                column=col_name,
+                type=col_type,
+                reason=_MULTI_COLUMN_FK_UNSUPPORTED_REASON,
+            )
         )
         return
 
@@ -805,12 +890,28 @@ def _process_column(
     reasons = [n_reason, t_reason]
     if heuristic_note:
         reasons.append(heuristic_note)
+
+    # Task 3 行為契約第 2 條：規則沒宣告 transform，但這個欄位出現在某條單欄
+    # 外鍵的 `columns` 裡（`is_multi_column_fk` 上面已經排除多欄的情形）——
+    # 自動產生 `reference`，取代預設的 `identity`。`ref_table`／`ref_column`
+    # 只承載「參照哪張表的哪個欄位」這個事實，實際解析是載入階段的工作。
+    if fk_ref is not None:
+        ref_table, ref_column = fk_ref
+        transform = Transform(
+            kind=TransformKind.REFERENCE, ref_table=ref_table, ref_column=ref_column
+        )
+        reasons.append(
+            f"transform 為 reference：來自 DDL 的外鍵宣告，參照 `{ref_table}.{ref_column}`"
+        )
+    else:
+        transform = Transform(kind=TransformKind.IDENTITY)
+
     confidence, tier = _propagate_table_uncertainty(best_confidence, heuristic_confidence, reasons)
     mappings_out.append(
         FieldMapping(
             source=SourceRef(table=table_name, column=col_name, type=col_type),
             target=TargetRef(model=target_model, field=field_name, type=field_obj.type),
-            transform=Transform(kind=TransformKind.IDENTITY),
+            transform=transform,
             confidence=confidence,
             tier=tier,
             reasons=reasons,
@@ -829,6 +930,7 @@ def _apply_column_rule(
     conflicts_out: list[MappingConflict],
     heuristic_note: str | None,
     heuristic_confidence: int | None,
+    fk_ref: tuple[str, str] | None,
 ) -> None:
     if column_rule.target_model != target_model:
         conflicts_out.append(
@@ -840,6 +942,39 @@ def _apply_column_rule(
                 reason=(
                     f"規則 {column_rule.origin} 將此欄位指到模型 `{column_rule.target_model}`，"
                     f"但資料表 `{table_name}` 已對應到模型 `{target_model}`，兩者不一致"
+                ),
+            )
+        )
+        return
+
+    # Task 3 衝突條件：規則明確宣告了 transform（優先順序第 1 條），但如果
+    # 規則說的是 `reference`、DDL 也宣告了同一欄位的外鍵，且兩邊的
+    # `ref_table`／`ref_column` 不一致——這是規則與 DDL 兩個事實來源互相
+    # 打架，不能挑一邊猜，要發 E-2001 讓人類裁定。兩邊一致（保留，不重複
+    # 記）或只有一邊宣告（用那一邊）都不算衝突，所以只在兩者都存在且不一致
+    # 時才進這個分支。
+    if (
+        column_rule.transform.kind == TransformKind.REFERENCE
+        and fk_ref is not None
+        and (column_rule.transform.ref_table, column_rule.transform.ref_column) != fk_ref
+    ):
+        ddl_ref_table, ddl_ref_column = fk_ref
+        conflicts_out.append(
+            MappingConflict(
+                table=table_name,
+                column=col_name,
+                kind=ConflictKind.COLUMN,
+                candidates=[
+                    f"規則（{column_rule.origin}）：ref_table=`{column_rule.transform.ref_table}`, "
+                    f"ref_column=`{column_rule.transform.ref_column}`",
+                    f"DDL 的 foreign_keys：ref_table=`{ddl_ref_table}`, "
+                    f"ref_column=`{ddl_ref_column}`",
+                ],
+                reason=(
+                    f"規則 {column_rule.origin} 宣告此欄位 transform 為 reference，參照 "
+                    f"`{column_rule.transform.ref_table}.{column_rule.transform.ref_column}`；"
+                    f"但來源 DDL 的 foreign_keys 宣告此欄位參照 "
+                    f"`{ddl_ref_table}.{ddl_ref_column}`，兩者不一致"
                 ),
             )
         )
