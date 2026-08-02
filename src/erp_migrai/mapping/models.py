@@ -62,7 +62,7 @@ class Transform:
     的值要解析成 `ref_table` 這張來源表裡、以 `ref_column` 為主鍵的某一筆
     記錄，再換成該記錄在 Odoo 裡的 id；實際解析是載入階段的工作，這裡只
     承載「參照哪張表的哪個欄位」這個事實）。細節與 YAML 寫法見
-    `src/erp_migrai/mapping/rules/README.md` 的「transform」一節。"""
+    `src/erp_migrai/mapping/rules/README.md` 的「四種 `transform`」一節。"""
 
     kind: TransformKind
     value_map: dict[str, Any] | None = None
