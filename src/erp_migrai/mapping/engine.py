@@ -103,6 +103,23 @@ def _fk_declared_no_match_reason(ref_table: str, ref_column: str) -> str:
     )
 
 
+# 控制者實測發現：外鍵欄位通常不會進 unmapped，而是被名稱／型別啟發式的低分
+# 對應掉（例如 `ord_cust_no` 對到 `sale.order.client_order_ref`，confidence
+# 只有 12，但確實 > 0，成功產生一筆 mappings）。這種情況下，上面
+# `_fk_declared_no_match_reason` 完全不會被用到——欄位根本沒有進 unmapped。
+# 但引擎明明知道這欄有 DDL 外鍵宣告，`reasons`（`mapping.csv` 人工審核時
+# 看的欄位）卻只寫了名稱重疊率的計算過程，完全沒有提到「這其實是外鍵」。
+# 昴君裁決：只要該來源欄位有 DDL 外鍵宣告，就在 `reasons` 加這條說明——
+# 不管它最後是 mapped 還是 unmapped。這裡是「mapped」情境專用的措辭，跟
+# `_fk_declared_no_match_reason`（unmapped 情境）刻意不同一句話，避免同一個
+# 事實在同一次呼叫（不同分支）裡看起來像是複製貼上兩次。
+def _fk_declared_reason_for_mapped_field(ref_table: str, ref_column: str) -> str:
+    return (
+        f"來源 DDL 宣告此欄位為外鍵，參照 `{ref_table}.{ref_column}`——若這是有效的關聯，"
+        "請在 rules/ 中為它指定 reference transform"
+    )
+
+
 # 覆蓋率低於此門檻（百分比）就發 E-2002；spec §「覆蓋率」明訂為 80。
 _COVERAGE_WARN_THRESHOLD = 80
 
@@ -922,6 +939,10 @@ def _process_column(
     reasons = [n_reason, t_reason]
     if heuristic_note:
         reasons.append(heuristic_note)
+    # 昴君裁決：這欄若有 DDL 外鍵宣告，即使已經成功對應（不是進 unmapped），
+    # 也要在 reasons 點名——名稱重疊率的計算不會告訴人這其實是外鍵。
+    if fk_ref is not None:
+        reasons.append(_fk_declared_reason_for_mapped_field(*fk_ref))
 
     # 不再從 `fk_ref` 自動產生 `reference`（見模組層級「修正」註解說明原因）
     # ——沒有規則時一律用 `identity`，跟 Task 3 之前的行為一致。

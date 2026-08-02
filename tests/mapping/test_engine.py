@@ -1754,3 +1754,84 @@ def test_multi_column_foreign_key_lands_in_unmapped_not_identity(tmp_path: Path)
         and fm.source.column in {"ord_cust_no", "ord_branch_no"}
         for fm in mapping.mappings
     )
+
+
+def test_foreign_key_without_column_rule_but_mapped_notes_ddl_declaration_in_reasons(
+    tmp_path: Path,
+):
+    """控制者實測：外鍵欄位通常不會進 `unmapped`，而是被低分對應掉——引擎
+    明明知道這欄有 DDL 外鍵宣告，卻沒有把這件事寫進 `reasons`，人在
+    `mapping.csv`（`reasons` 的最終去處）只看得到名稱重疊率的計算，完全不
+    知道這其實是外鍵、可能需要 reference transform 而不是 identity。
+
+    昴君裁決：只要該來源欄位有 DDL 外鍵宣告，就在 `reasons` 加一條說明——
+    不管它最後是 mapped 還是 unmapped；點名被參照的表與欄位，並告訴人怎麼
+    動手。這裡用 `_ord_catalog_and_table_rule()`（confidence=80，真的落在
+    mappings，不是 unmapped）驗證「mapped」這個分支。"""
+    catalog, table_rules_holder = _ord_catalog_and_table_rule()
+    rules = RuleSet(table_rules=table_rules_holder.table_rules, column_rules={})
+    table = _table(
+        "ord_mast",
+        [("ord_cust_no", "CHAR(10)")],
+        foreign_keys=[
+            {"columns": ["ord_cust_no"], "ref_table": "cust_mast", "ref_columns": ["cust_no"]}
+        ],
+    )
+    inventory = _inventory([table])
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, catalog, rules, event_log=log)
+
+    assert mapping.unmapped == []
+    assert mapping.conflicts == []
+    assert len(mapping.mappings) == 1
+    fm = mapping.mappings[0]
+    assert fm.source.column == "ord_cust_no"
+    # 沒有規則，transform 維持 identity（不再自動產生 reference，見上方
+    # 「修正」註解），但 reasons 必須點名這是 DDL 宣告的外鍵，參照哪張表
+    # 哪個欄位。
+    assert fm.transform.kind is TransformKind.IDENTITY
+    assert any("cust_mast" in reason and "cust_no" in reason for reason in fm.reasons)
+    assert not log.has_fatal(Stage.MAP)
+
+
+def test_column_rule_declared_transform_does_not_add_ddl_fk_reason(tmp_path: Path):
+    """守住邊界：規則已經明確宣告過 transform 的欄位（走 `_apply_column_rule`），
+    人已經教過了，不需要再提示——即使 DDL 也宣告了同一欄位的外鍵、且與規則
+    一致（不觸發 E-2001 衝突），`reasons` 也不應該多出「DDL 宣告外鍵」這條
+    提示，避免噪音。"""
+    catalog, table_rules_holder = _ord_catalog_and_table_rule()
+    rules = RuleSet(
+        table_rules=table_rules_holder.table_rules,
+        column_rules={
+            ("ord_mast", "ord_cust_no"): ColumnRule(
+                source_table="ord_mast",
+                source_column="ord_cust_no",
+                target_model="x.ord",
+                target_field="cust_no",
+                transform=Transform(
+                    kind=TransformKind.REFERENCE, ref_table="cust_mast", ref_column="cust_no"
+                ),
+                origin="test#ord_mast.ord_cust_no",
+            )
+        },
+    )
+    table = _table(
+        "ord_mast",
+        [("ord_cust_no", "CHAR(10)")],
+        foreign_keys=[
+            {"columns": ["ord_cust_no"], "ref_table": "cust_mast", "ref_columns": ["cust_no"]}
+        ],
+    )
+    inventory = _inventory([table])
+    log = _log(tmp_path)
+
+    mapping = build_mapping(inventory, catalog, rules, event_log=log)
+
+    assert mapping.conflicts == []
+    assert len(mapping.mappings) == 1
+    fm = mapping.mappings[0]
+    assert fm.transform.kind is TransformKind.REFERENCE
+    assert not any("cust_mast" in reason for reason in fm.reasons)
+    assert fm.reasons == ["命中欄位規則：test#ord_mast.ord_cust_no"]
+    assert not log.has_fatal(Stage.MAP)
