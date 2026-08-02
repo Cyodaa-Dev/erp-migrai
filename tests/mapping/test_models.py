@@ -27,8 +27,8 @@ from erp_migrai.mapping.models import (
 SCHEMA_PATH = Path(mapping_package.__file__).parent / "schema" / "mapping.schema.json"
 
 
-def test_schema_version_is_one_zero():
-    assert SCHEMA_VERSION == "1.0"
+def test_schema_version_is_1_1():
+    assert SCHEMA_VERSION == "1.1"
 
 
 @pytest.mark.parametrize(
@@ -55,8 +55,32 @@ def test_tier_rejects_out_of_range_confidence():
         tier_for(-1)
 
 
-def test_transform_kinds_are_exactly_three():
-    assert sorted(k.value for k in TransformKind) == ["constant", "identity", "value_map"]
+def test_transform_kind_enum_is_exactly_four_values():
+    """對 enum 斷言完整值集合（原則 5.4）。
+
+    只斷言「reference 在裡面」抓不到「有人多加了第五種」；公開契約的
+    enum 必須斷言完整集合。
+    """
+    assert {k.value for k in TransformKind} == {
+        "identity",
+        "value_map",
+        "constant",
+        "reference",
+    }
+
+
+def test_reference_transform_carries_ref_table_and_ref_column():
+    t = Transform(
+        kind=TransformKind.REFERENCE,
+        ref_table="cust_mast",
+        ref_column="cust_no",
+    )
+    assert t.ref_table == "cust_mast"
+    assert t.ref_column == "cust_no"
+    # 其餘三個欄位在 reference 下一律是 None
+    assert t.value_map is None
+    assert t.default is None
+    assert t.value is None
 
 
 def test_conflict_kinds_are_exactly_two():
@@ -100,6 +124,18 @@ def _build_full_mapping() -> Mapping:
             confidence=40,
             tier=Tier.NEEDS_HUMAN,
             reasons=["來源沒有國別欄位，暫以常數頂替，需人工確認"],
+        ),
+        FieldMapping(
+            source=SourceRef(table="ord_mast", column="ord_cust_no", type="CHAR(10)"),
+            target=TargetRef(model="sale.order", field="partner_id", type="many2one"),
+            transform=Transform(
+                kind=TransformKind.REFERENCE,
+                ref_table="cust_mast",
+                ref_column="cust_no",
+            ),
+            confidence=90,
+            tier=Tier.AUTO,
+            reasons=["外鍵：參照 cust_mast.cust_no"],
         ),
     ]
     return Mapping(
@@ -214,7 +250,25 @@ def _valid_target_ref() -> dict:
 
 
 def _valid_transform() -> dict:
-    return {"kind": "identity", "value_map": None, "default": None, "value": None}
+    return {
+        "kind": "identity",
+        "value_map": None,
+        "default": None,
+        "value": None,
+        "ref_table": None,
+        "ref_column": None,
+    }
+
+
+def _valid_reference_transform() -> dict:
+    return {
+        "kind": "reference",
+        "value_map": None,
+        "default": None,
+        "value": None,
+        "ref_table": "cust_mast",
+        "ref_column": "cust_no",
+    }
 
 
 def _valid_field_mapping() -> dict:
@@ -282,7 +336,7 @@ _BUILDERS = {
 _REQUIRED_KEYS = {
     "source_ref": ["table", "column", "type"],
     "target_ref": ["model", "field", "type"],
-    "transform": ["kind", "value_map", "default", "value"],
+    "transform": ["kind", "value_map", "default", "value", "ref_table", "ref_column"],
     "field_mapping": ["source", "target", "transform", "confidence", "tier", "reasons"],
     "unmapped_column": ["table", "column", "type", "reason"],
     "mapping_conflict": ["table", "column", "kind", "candidates", "reason"],
@@ -476,6 +530,55 @@ def test_transform_bogus_kind_value_is_rejected():
     _assert_document_invalid(_embed("transform", transform))
 
 
+# ---------------------------------------------------------------------------
+# schema 1.1：`reference` transform（`ref_table`／`ref_column`）
+# ---------------------------------------------------------------------------
+
+
+def test_valid_reference_transform_embeds_and_validates():
+    """正向測試：合法的 reference transform 通過驗證。"""
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    doc = _embed("transform", _valid_reference_transform())
+    Draft202012Validator(schema).validate(doc)
+
+
+def test_transform_kind_reference_typo_is_rejected():
+    """打錯字的 kind（`refrence`）必須不通過——這不是既有的
+    `bogus_transform_kind` 負例的重複：它專門守住『reference 這個具體字串
+    真的在 enum 裡，而不是隨便一個字串都被擋下』這件事。"""
+    transform = _valid_reference_transform()
+    transform["kind"] = "refrence"
+    _assert_document_invalid(_embed("transform", transform))
+
+
+def test_reference_transform_missing_ref_table_key_is_rejected():
+    """`transform` 少了 `ref_table` 鍵必須不通過——`required` 已經涵蓋新
+    欄位，不能因為新增而悄悄放寬成非必填。"""
+    transform = _valid_reference_transform()
+    del transform["ref_table"]
+    _assert_document_invalid(_embed("transform", transform))
+
+
+def test_reference_transform_missing_ref_column_key_is_rejected():
+    transform = _valid_reference_transform()
+    del transform["ref_column"]
+    _assert_document_invalid(_embed("transform", transform))
+
+
+def test_reference_transform_ref_table_wrong_type_is_rejected():
+    """`ref_table` 為數字必須不通過——型別宣告是 `["string", "null"]`，
+    不是任意型別。"""
+    transform = _valid_reference_transform()
+    transform["ref_table"] = 12345
+    _assert_document_invalid(_embed("transform", transform))
+
+
+def test_reference_transform_ref_column_wrong_type_is_rejected():
+    transform = _valid_reference_transform()
+    transform["ref_column"] = 12345
+    _assert_document_invalid(_embed("transform", transform))
+
+
 def test_mapping_conflict_wrong_typed_column_is_rejected():
     """`column` 只允許 `string` 或 `null`，一個整數必須被拒絕。"""
     conflict = _valid_mapping_conflict()
@@ -514,10 +617,11 @@ def test_conflict_kind_enum_is_exactly_the_two_defined_values():
     assert set(schema["$defs"]["conflict_kind"]["enum"]) == {"table", "column"}
 
 
-def test_transform_kind_enum_is_exactly_the_three_defined_values():
+def test_transform_kind_enum_is_exactly_the_four_defined_values():
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     assert set(schema["$defs"]["transform"]["properties"]["kind"]["enum"]) == {
         "identity",
         "value_map",
         "constant",
+        "reference",
     }

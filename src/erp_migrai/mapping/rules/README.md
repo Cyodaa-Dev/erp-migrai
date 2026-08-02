@@ -49,7 +49,7 @@ columns:
 訊息列出兩個衝突規則各自的 `檔名#鍵`；指到相同的 `target_model` 不算
 衝突，只取排序後先出現的那一份。
 
-## 三種 `transform`
+## 四種 `transform`
 
 大多數規則不需要 `transform`：省略它，等同 `identity`——來源值原封不動
 搬到目標欄位。
@@ -93,7 +93,26 @@ columns:
       value: true
 ```
 
-只有這三種 `kind`；不存在第四種。
+### `reference`：外鍵
+
+來源欄位的值其實是指向**另一張來源表**某一筆記錄的鍵（例如訂單表的
+`ord_cust_no` 存的是客戶表 `cust_mast` 的 `cust_no`）。這裡只承載「參照
+哪張來源表的哪個欄位」這個事實；把鍵值實際解析成 Odoo 記錄 id，是載入
+階段的工作，不在這裡發生。`ref_table`／`ref_column` 皆為必填。
+
+```yaml
+columns:
+  ord_mast.ord_cust_no:
+    target: sale.order.partner_id
+    transform:
+      kind: reference
+      ref_table: cust_mast   # 被參照的來源資料表
+      ref_column: cust_no    # 被參照表的主鍵欄位
+```
+
+MVP 只支援單欄主鍵的被參照表；複合主鍵在載入階段會直接失敗（E-4001）。
+
+只有這四種 `kind`；不存在第五種。
 
 **`value`／`map`／`default` 必須是能寫進 `mapping.json` 的純量值**（字串、
 數字、布林、`null`，或由它們組成的 list／dict）：YAML 沒加引號的值不一定

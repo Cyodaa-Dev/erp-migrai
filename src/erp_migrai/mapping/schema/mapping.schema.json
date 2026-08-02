@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Cyodaa-Dev/erp-migrai/schema/mapping-1.0.json",
+  "$id": "https://github.com/Cyodaa-Dev/erp-migrai/schema/mapping-1.1.json",
   "title": "ERP MIGRAI mapping",
   "description": "migrai map 的產出。這是對下游（含商業版 consumer）承諾的公開格式，破壞相容性必須升版 schema_version。",
   "type": "object",
@@ -63,18 +63,26 @@
     "transform": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "value_map", "default", "value"],
-      "description": "值的轉換方式，只有三種 kind。value_map／default／value 皆允許為 null——每個欄位只有某一種 kind 會用到對應的值，這裡刻意只表達型別、不做「依 kind 而定」的條件式必填檢查；『value_map 必須有 map、constant 必須有 value』這種跨欄位規則留給後續任務的 rules_loader 在載入時檢查，schema 保持簡單。",
+      "required": ["kind", "value_map", "default", "value", "ref_table", "ref_column"],
+      "description": "值的轉換方式，共四種 kind：`identity`（原封不動搬過去）、`value_map`（離散值對照）、`constant`（固定值）、`reference`（外鍵，參照見 ref_table／ref_column）。value_map／default／value／ref_table／ref_column 皆允許為 null——每個欄位只有某一種 kind 會用到對應的值，這裡刻意只表達型別、不做「依 kind 而定」的條件式必填檢查；『value_map 必須有 map、constant 必須有 value、reference 必須有 ref_table 與 ref_column』這種跨欄位規則留給 rules_loader 在載入時檢查，schema 保持簡單。",
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["identity", "value_map", "constant"]
+          "enum": ["identity", "value_map", "constant", "reference"]
         },
         "value_map": {
           "type": ["object", "null"]
         },
         "default": {},
-        "value": {}
+        "value": {},
+        "ref_table": {
+          "type": ["string", "null"],
+          "description": "kind == \"reference\" 時，被參照的**來源資料表**名稱（不是 Odoo 模型——目標模型由 models[] 決定，不在這裡重複）。其他 kind 一律為 null。"
+        },
+        "ref_column": {
+          "type": ["string", "null"],
+          "description": "kind == \"reference\" 時，被參照表的主鍵欄位名稱。MVP 只支援單欄主鍵的被參照表；複合主鍵在載入階段發 E-4001。其他 kind 一律為 null。"
+        }
       }
     },
     "source_ref": {

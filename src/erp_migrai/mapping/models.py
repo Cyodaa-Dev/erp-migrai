@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 # 三級可信度分層的邊界，照 spec §3.1。
 AUTO_THRESHOLD = 90
@@ -29,6 +29,7 @@ class TransformKind(StrEnum):
     IDENTITY = "identity"
     VALUE_MAP = "value_map"
     CONSTANT = "constant"
+    REFERENCE = "reference"
 
 
 class ConflictKind(StrEnum):
@@ -56,14 +57,20 @@ def tier_for(confidence: int) -> Tier:
 
 @dataclass
 class Transform:
-    """值的轉換方式。只有三種：`identity`（原封不動搬過去）、`value_map`
-    （離散值對照）、`constant`（固定值）；不存在第四種。細節與 YAML 寫法見
-    `src/erp_migrai/mapping/rules/README.md` 的「三種 transform」一節。"""
+    """值的轉換方式。有四種：`identity`（原封不動搬過去）、`value_map`
+    （離散值對照）、`constant`（固定值）、`reference`（外鍵：這個來源欄位
+    的值要解析成 `ref_table` 這張來源表裡、以 `ref_column` 為主鍵的某一筆
+    記錄，再換成該記錄在 Odoo 裡的 id；實際解析是載入階段的工作，這裡只
+    承載「參照哪張表的哪個欄位」這個事實）。細節與 YAML 寫法見
+    `src/erp_migrai/mapping/rules/README.md` 的「transform」一節。"""
 
     kind: TransformKind
     value_map: dict[str, Any] | None = None
     default: Any = None
     value: Any = None
+    # 只有 kind == REFERENCE 會用到；其餘 kind 一律是 None。
+    ref_table: str | None = None
+    ref_column: str | None = None
 
 
 @dataclass

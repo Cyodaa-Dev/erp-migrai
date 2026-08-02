@@ -711,6 +711,105 @@ columns:
 
 
 # ---------------------------------------------------------------------------
+# reference transform（schema 1.1）
+# ---------------------------------------------------------------------------
+
+
+def test_reference_transform_is_parsed(tmp_path: Path):
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    (rules_dir / "r.yaml").write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  ord_mast:\n"
+        "    target_model: sale.order\n"
+        "columns:\n"
+        "  ord_mast.ord_cust_no:\n"
+        "    target: sale.order.partner_id\n"
+        "    transform:\n"
+        "      kind: reference\n"
+        "      ref_table: cust_mast\n"
+        "      ref_column: cust_no\n",
+        encoding="utf-8",
+    )
+    rule_set = load_rules(CATALOG, rules_dir)
+    rule = rule_set.column_rules[("ord_mast", "ord_cust_no")]
+    assert rule.transform.kind is TransformKind.REFERENCE
+    assert rule.transform.ref_table == "cust_mast"
+    assert rule.transform.ref_column == "cust_no"
+
+
+def test_reference_transform_without_ref_table_is_rejected(tmp_path: Path):
+    """缺 ref_table 必須在載入規則檔的當下就大聲失敗，而不是產出一個
+    load 階段才會炸掉、且錯誤訊息指不到規則檔的 mapping。"""
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    (rules_dir / "r.yaml").write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  ord_mast:\n"
+        "    target_model: sale.order\n"
+        "columns:\n"
+        "  ord_mast.ord_cust_no:\n"
+        "    target: sale.order.partner_id\n"
+        "    transform:\n"
+        "      kind: reference\n"
+        "      ref_column: cust_no\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuleError) as exc:
+        load_rules(CATALOG, rules_dir)
+    # 訊息必須點名是哪個檔案的哪個鍵
+    assert "r.yaml" in str(exc.value)
+    assert "ord_mast.ord_cust_no" in str(exc.value)
+    assert "ref_table" in str(exc.value)
+
+
+def test_reference_transform_without_ref_column_is_rejected(tmp_path: Path):
+    """對稱於缺 `ref_table` 的情形：缺 `ref_column` 同樣要點名檔案與鍵。"""
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    (rules_dir / "r.yaml").write_text(
+        "version: 1\n"
+        "tables:\n"
+        "  ord_mast:\n"
+        "    target_model: sale.order\n"
+        "columns:\n"
+        "  ord_mast.ord_cust_no:\n"
+        "    target: sale.order.partner_id\n"
+        "    transform:\n"
+        "      kind: reference\n"
+        "      ref_table: cust_mast\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuleError) as exc:
+        load_rules(CATALOG, rules_dir)
+    assert "r.yaml" in str(exc.value)
+    assert "ord_mast.ord_cust_no" in str(exc.value)
+    assert "ref_column" in str(exc.value)
+
+
+def test_reference_transform_with_empty_ref_table_is_rejected(tmp_path: Path):
+    """空字串跟完全沒填一樣不合法——`ref_table: ""` 不應該悄悄通過。"""
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    (rules_dir / "r.yaml").write_text(
+        "version: 1\n"
+        "columns:\n"
+        "  ord_mast.ord_cust_no:\n"
+        "    target: res.partner.ref\n"
+        "    transform:\n"
+        "      kind: reference\n"
+        "      ref_table: ''\n"
+        "      ref_column: cust_no\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuleError) as exc:
+        load_rules(CATALOG, rules_dir)
+    assert "ref_table" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
 # 最終整分支審查修正 Minor 5：點開頭的檔案（如 macOS 的 .DS_Store）不算「可能
 # 打錯副檔名」的候選
 # ---------------------------------------------------------------------------

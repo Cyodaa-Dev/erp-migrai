@@ -166,6 +166,11 @@ def _transform_cell_and_extra_reasons(transform) -> tuple[str, list[str]]:
     這筆映射時唯一需要確認的事。跟 `value_map` 一樣，把值另外説明在
     `reasons`（而不是塞進只有一格空間的 `transform` 欄位），寫法也刻意跟
     `value_map` 對稱。
+
+    `reference`（schema 1.1 新增）：這一欄是外鍵，寫法跟 `constant`／
+    `value_map` 對稱——`transform` 欄位只放 `kind` 的字面值，實際參照的
+    來源表與欄位另外說明在 `reasons`，讓人在試算表裡一眼看出「這一欄是
+    外鍵，指到哪裡」，不必另外開 mapping.json 才看得懂。
     """
     if transform.kind == TransformKind.IDENTITY:
         return "", []
@@ -174,6 +179,10 @@ def _transform_cell_and_extra_reasons(transform) -> tuple[str, list[str]]:
         note = f"轉換方式 value_map，對照表：{json.dumps(transform.value_map, ensure_ascii=False)}"
         if transform.default is not None:
             note += f"；找不到對照時的預設值：{json.dumps(transform.default, ensure_ascii=False)}"
+        return transform.kind.value, [note]
+
+    if transform.kind == TransformKind.REFERENCE:
+        note = f"轉換方式 reference，參照來源：{transform.ref_table}.{transform.ref_column}"
         return transform.kind.value, [note]
 
     # 只剩 CONSTANT：把實際的值寫進 reasons，讓人不用另外開 mapping.json

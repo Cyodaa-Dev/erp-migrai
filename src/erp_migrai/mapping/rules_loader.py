@@ -316,6 +316,21 @@ def _parse_transform(where: str, body: Any) -> Transform:
             default=default,
         )
 
+    if kind == TransformKind.REFERENCE:
+        ref_table = body.get("ref_table")
+        if not isinstance(ref_table, str) or not ref_table.strip():
+            raise RuleError(f"{where} 的 `transform.kind` 是 `reference`，但缺少非空的 `ref_table`")
+        ref_column = body.get("ref_column")
+        if not isinstance(ref_column, str) or not ref_column.strip():
+            raise RuleError(
+                f"{where} 的 `transform.kind` 是 `reference`，但缺少非空的 `ref_column`"
+            )
+        return Transform(
+            kind=TransformKind.REFERENCE,
+            ref_table=ref_table,
+            ref_column=ref_column,
+        )
+
     # 只剩 CONSTANT：`value` 必須存在（哪怕值是 None／false／0），
     # 用 `in` 而非真值判斷，避免把「合法填了假值」誤判成「沒填」。
     if "value" not in body:

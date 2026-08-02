@@ -449,6 +449,48 @@ def test_csv_constant_transform_value_is_visible_in_reasons(tmp_path):
     assert "TW" in row[9]
 
 
+def test_csv_reference_transform_writes_kind_and_ref_table_column_in_reasons(tmp_path):
+    """schema 1.1 新增的 `reference`：`transform` 欄位放 `kind` 的字面值，
+    參照的來源表與欄位說明在 `reasons`，讓人在試算表裡一眼看出這一欄是
+    外鍵、指到哪裡（陷阱二：不能落進 writer.py 尾端『只剩 CONSTANT』的
+    無條件分支，否則會被誤寫成一句假話：`轉換方式 constant，值：null`）。
+    """
+    mapping = Mapping(
+        schema_version=SCHEMA_VERSION,
+        inventory_synthetic=True,
+        stats=MappingStats(
+            source_columns=1,
+            mapped_columns=1,
+            coverage_percent=100,
+            auto=1,
+            suggested=0,
+            needs_human=0,
+        ),
+        mappings=[
+            FieldMapping(
+                source=SourceRef(table="ord_mast", column="ord_cust_no", type="CHAR(10)"),
+                target=TargetRef(model="sale.order", field="partner_id", type="many2one"),
+                transform=Transform(
+                    kind=TransformKind.REFERENCE,
+                    ref_table="cust_mast",
+                    ref_column="cust_no",
+                ),
+                confidence=90,
+                tier=Tier.AUTO,
+                reasons=["外鍵：參照 cust_mast.cust_no"],
+            ),
+        ],
+    )
+    path = write_mapping_csv(mapping, tmp_path / "out")
+    rows = {r[1]: r for r in _read_csv_rows(path)[1:]}
+    row = rows["ord_cust_no"]
+    assert row[6] == "reference"
+    assert "reference" in row[9]
+    assert "cust_mast.cust_no" in row[9]
+    # 不能被誤寫成 constant——這正是陷阱二要守住的事。
+    assert "constant" not in row[9]
+
+
 def test_csv_unmapped_row_has_blank_target_and_transform_and_confidence(tmp_path):
     path = write_mapping_csv(_sample_mapping(), tmp_path / "out")
     rows = {r[1]: r for r in _read_csv_rows(path)[1:]}

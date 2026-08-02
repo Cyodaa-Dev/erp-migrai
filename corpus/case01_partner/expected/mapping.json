@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "inventory_synthetic": true,
   "stats": {
     "source_columns": 7,
@@ -36,7 +36,9 @@
         "kind": "identity",
         "value_map": null,
         "default": null,
-        "value": null
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
       },
       "confidence": 100,
       "tier": "auto",
@@ -59,7 +61,9 @@
         "kind": "identity",
         "value_map": null,
         "default": null,
-        "value": null
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
       },
       "confidence": 100,
       "tier": "auto",
@@ -82,7 +86,9 @@
         "kind": "identity",
         "value_map": null,
         "default": null,
-        "value": null
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
       },
       "confidence": 100,
       "tier": "auto",
@@ -105,7 +111,9 @@
         "kind": "identity",
         "value_map": null,
         "default": null,
-        "value": null
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
       },
       "confidence": 100,
       "tier": "auto",
@@ -131,7 +139,9 @@
           "N": false
         },
         "default": true,
-        "value": null
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
       },
       "confidence": 100,
       "tier": "auto",
@@ -154,7 +164,9 @@
         "kind": "identity",
         "value_map": null,
         "default": null,
-        "value": null
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
       },
       "confidence": 100,
       "tier": "auto",
@@ -177,7 +189,9 @@
         "kind": "identity",
         "value_map": null,
         "default": null,
-        "value": null
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
       },
       "confidence": 100,
       "tier": "auto",
