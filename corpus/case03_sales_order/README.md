@@ -147,20 +147,40 @@ Odoo 會不會改用自動編號覆寫掉？已對同一份原始碼的 `create(
 
 ## 金額手算（`ord_qty × ord_price`）
 
-`data/seed.sql` 的明細金額刻意取整數，方便肉眼核對，不必只相信程式：
+`data/seed.sql` 的明細金額大多刻意取整數，方便肉眼核對，不必只相信程式；
+`O0001` 第 3 行刻意例外（見下方「float 陷阱」一節）：
 
 | 訂單 | 明細 | 數量 × 單價 | 小計 |
 |---|---|---|---|
 | `O0001`（客戶 `C001`） | `P001` | 10 × 1000.0000 | 10000.0000 |
 | `O0001`（客戶 `C001`） | `P002` | 4 × 250.0000 | 1000.0000 |
-| **`O0001` 合計** | | | **11000.0000** |
+| `O0001`（客戶 `C001`） | `P002`（第 3 行） | 3 × 333.3300 | 999.9900 |
+| **`O0001` 合計** | | | **11999.9900** |
 | `O0002`（客戶 `C002`） | `P001` | 5 × 1000.0000 | 5000.0000 |
 | `O0002`（客戶 `C002`） | `P003` | 2 × 5000.0000 | 10000.0000 |
 | **`O0002` 合計** | | | **15000.0000** |
 
-兩張訂單各有 2 行明細（皆 ≥ 2 行，證明 `one2many` 分組不是只有一行的巧合）。
-`P003`（備用馬達）`prod_stus = 'N'`，用來驗 `value_map` 走 false 分支
-（`product.product.active = false`）。
+`O0001` 有 3 行明細、`O0002` 有 2 行（皆 ≥ 2 行，證明 `one2many` 分組不是
+只有一行的巧合）。`P003`（備用馬達）`prod_stus = 'N'`，用來驗 `value_map`
+走 false 分支（`product.product.active = false`）。
+
+### float 陷阱：`O0001` 第 3 行單價刻意帶小數尾數
+
+其餘明細的金額都是整數值，SQLite 的 NUMERIC 親和性會把它們存成
+`INTEGER`——Python 讀回來也是 `int`，這種情況下 `Decimal(v)` 與
+`Decimal(str(v))` 剛好永遠相等，HANDOFF 點名的 `Decimal(v)` 陷阱在這份
+語料上永遠不會發火。`O0001` 第 3 行的單價 `333.3300` 有非零小數部分，
+SQLite 因此把它存成 `REAL`（IEEE 754 float），Python 讀回是 `float`。
+實跑 `make corpus` 後直接讀 `data.sqlite` 驗證：
+
+```
+row: ('O0001', 3, 'P002', 3, 333.33)
+Decimal(v)       = 333.32999999999998408384271897375583648681640625
+Decimal(str(v))  = 333.33
+```
+
+兩者不相等——Task 11 若把單價／小計寫成 `Decimal(v)` 而非 `Decimal(str(v))`，
+在這一行會算出錯誤的金額，測試才有機會抓到。
 
 ## 檔案
 
@@ -168,7 +188,7 @@ Odoo 會不會改用自動編號覆寫掉？已對同一份原始碼的 `create(
 |---|---|
 | `src/so_maintain.4gl` | 合成 Genero 程式（單頭＋明細雙檔維護＋CURSOR） |
 | `src/schema.sql` | T100 風格來源表 DDL（`cust_mast`／`prod_mast`／`ord_mast`／`ord_deta`） |
-| `data/seed.sql` | 合成來源資料。`data.sqlite` 不進 git，於載入階段由此生成 |
+| `data/seed.sql` | 合成來源資料。`data.sqlite` 不進 git，由 `make corpus` 生成 |
 | `expected/inventory.json` | golden：`migrai scan` 應該吐出的內容 |
 | `expected/mapping.json` | golden：`migrai map` 應該吐出的內容 |
 | `../../src/erp_migrai/mapping/rules/sale_order.yaml` | 這個 case 用到的映射規則（`prod_mast`／`ord_mast`／`ord_deta` 三張表） |
