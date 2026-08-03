@@ -30,6 +30,6 @@ INSERT INTO ord_deta VALUES ('O0001', 2, 'P002', 4.0000,  250.0000,  '液壓快�
 -- IEEE 754 float，Python 讀回是 333.33 這個 float，Decimal(333.33) ==
 -- 333.32999999999998408384271897375583648681640625，Decimal('333.33') ==
 -- 333.33，兩者不相等（實測見 .superpowers/sdd/plan3-task-5-report.md）。
-INSERT INTO ord_deta VALUES ('O0001', 3, 'P002', 3.0000,  333.3300,  '液壓快接接頭 3 個（促銷折讓後單價，非整數）');
+INSERT INTO ord_deta VALUES ('O0001', 3, 'P002', 3.0000,  333.3300,  '液壓快接接頭 3 個（加急件加價後單價，非整數）');
 INSERT INTO ord_deta VALUES ('O0002', 1, 'P001', 5.0000,  1000.0000, 'CNC 車床刀具 5 支');
 INSERT INTO ord_deta VALUES ('O0002', 2, 'P003', 2.0000,  5000.0000, '備用馬達 2 台');
