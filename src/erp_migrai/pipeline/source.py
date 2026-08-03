@@ -47,9 +47,11 @@ class SourceReader(Protocol):
     標了 `@runtime_checkable` 讓 `isinstance(reader, SourceReader)` 可用，
     但這只驗證「方法名都存在」，不驗證參數簽章——`pyproject.toml` 的 dev
     依賴沒有 mypy／pyright，簽章漂移（例如某個實作把 `table` 參數改名成
-    `table_name`）不會被任何工具擋下。`tests/pipeline/test_source.py` 另外
-    用 `inspect.signature` 逐一比對 Protocol 與實作的參數名稱／順序，兩者
-    分工：這裡守「有沒有這個方法」，測試那邊守「簽章長得一不一樣」。
+    `table_name`、改成 positional-only、或換掉回傳型別註記）不會被任何工具
+    擋下。`tests/pipeline/test_source.py` 另外逐一比對
+    `str(inspect.signature(...))`——比字串而不是比參數名稱清單，是因為後者
+    拿不到參數 kind 與型別註記，positional-only 與回傳註記的漂移會整個看不
+    見。兩者分工：這裡守「有沒有這個方法」，測試那邊守「簽章長得一不一樣」。
     """
 
     def tables(self) -> list[str]:
