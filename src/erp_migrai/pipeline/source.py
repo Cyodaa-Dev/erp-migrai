@@ -18,18 +18,38 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 
 class SourceError(Exception):
     """來源資料庫讀不到、表不存在、或結構不符預期。載入階段把它轉成 E-4001。"""
 
 
+def _quote_identifier(name: str) -> str:
+    """把識別字（表名／欄位名）安全地包成 SQL 的雙引號識別字。
+
+    呼叫端在組進 SQL 字串之前都先過白名單（`_check_table`／`tables()` 的
+    結果），但白名單只判斷「這個名字存在於來源資料庫」，不判斷名字本身
+    好不好組進 SQL 字串——SQLite 合法地允許表名／欄位名本身含雙引號。
+    若不在這裡跳脫，即使名字通過了白名單，組字串那一步仍然會炸出使用者
+    看不懂的 `sqlite3.OperationalError`，等於白名單檢查白做了一半。
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
+@runtime_checkable
 class SourceReader(Protocol):
     """載入階段讀來源資料所需的最小介面。
 
     Task 7／10／11 依賴這五個方法的確切簽章。開源版只有 `SqliteSourceReader`
     這一種實作。
+
+    標了 `@runtime_checkable` 讓 `isinstance(reader, SourceReader)` 可用，
+    但這只驗證「方法名都存在」，不驗證參數簽章——`pyproject.toml` 的 dev
+    依賴沒有 mypy／pyright，簽章漂移（例如某個實作把 `table` 參數改名成
+    `table_name`）不會被任何工具擋下。`tests/pipeline/test_source.py` 另外
+    用 `inspect.signature` 逐一比對 Protocol 與實作的參數名稱／順序，兩者
+    分工：這裡守「有沒有這個方法」，測試那邊守「簽章長得一不一樣」。
     """
 
     def tables(self) -> list[str]:
@@ -66,9 +86,52 @@ class SqliteSourceReader:
         self._path = path
         self._con = sqlite3.connect(path)
         self._con.row_factory = sqlite3.Row
+        try:
+            # sqlite3.connect() 本身是惰性的：對「檔案存在、但內容根本不是
+            # SQLite 資料庫」的檔案（改過副檔名的 CSV、半下載的檔案、
+            # Git LFS pointer……）一樣會靜默成功回傳連線物件，錯誤要等到
+            # 第一次真正查詢時才冒出來，而且冒出來的是使用者看不懂的
+            # sqlite3.DatabaseError。PRAGMA schema_version 對任何合法的
+            # SQLite 檔案（甚至是全新的空檔案）都能立刻執行，用它在連線
+            # 當下就探測一次，把這類錯誤提早轉成點名路徑的 SourceError。
+            self._con.execute("PRAGMA schema_version")
+        except sqlite3.Error as exc:
+            self._con.close()
+            raise SourceError(
+                f"讀不到來源資料庫（檔案內容不是有效的 SQLite 資料庫）：{path}"
+            ) from exc
+
+    def _execute(self, sql: str) -> sqlite3.Cursor:
+        """所有查詢的統一入口：把底層 `sqlite3.Error` 一律包成 `SourceError`。
+
+        `__init__` 的探測只擋得住「連線當下就能發現」的損壞；來源資料庫在
+        連線之後才損壞（例如另一個行程正在覆寫檔案），或個別查詢踩到其他
+        底層錯誤，都要在這裡收斂。載入階段（Task 10／11）要把來源讀取的
+        錯誤轉成 `E-4001`，只能認得 `SourceError` 這一種例外類型——任何
+        底層的 `sqlite3.Error` 洩漏出去，這條轉換就會漏接。
+        """
+        try:
+            return self._con.execute(sql)
+        except sqlite3.Error as exc:
+            raise SourceError(f"查詢來源資料庫 {self._path} 時發生錯誤：{exc}") from exc
+
+    def close(self) -> None:
+        """關閉底層 SQLite 連線。
+
+        Task 10／11 會為每個來源開一個 reader，沒有這個方法連線就只能一路
+        開到行程結束。刻意保持最小——不做連線池、不做重複關閉的特殊處理，
+        這些都超出目前用得到的範圍。
+        """
+        self._con.close()
+
+    def __enter__(self) -> SqliteSourceReader:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     def tables(self) -> list[str]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT name FROM sqlite_master"
             " WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             " ORDER BY name"
@@ -85,21 +148,32 @@ class SqliteSourceReader:
         表名、哪個資料庫——而不是讓一個從未被檢查過的字串直接流進 SQL，
         變成一個難以追查、訊息又不知所云的底層 sqlite3 例外。
         """
-        if table not in self.tables():
-            raise SourceError(f"表 {table!r} 不存在於來源資料庫 {self._path}")
+        tables = self.tables()
+        if table in tables:
+            return
+        # SQLite 本身比對表名不分大小寫，但這裡的白名單比對是分大小寫的
+        # 字串相等——若庫裡是 Ord_Deta、mapping.json 寫成 ord_deta，單純說
+        # 「表不存在」會把人導向「表名打錯字」，而看不出真正原因是大小寫
+        # 不符。找得到忽略大小寫後相符的表名，就在訊息裡直接點名它；行為
+        # 不變，仍然是同一種 SourceError，只是訊息更好懂。
+        hint = ""
+        case_insensitive_matches = [t for t in tables if t.lower() == table.lower()]
+        if case_insensitive_matches:
+            hint = f"（大小寫不符：來源資料庫裡的表名是 {case_insensitive_matches[0]!r}）"
+        raise SourceError(f"表 {table!r} 不存在於來源資料庫 {self._path}{hint}")
 
     def primary_key(self, table: str) -> list[str]:
         self._check_table(table)
         # PRAGMA table_info 的 pk 欄位：0 表示不是主鍵，非 0 是複合主鍵裡的
         # 1-based 序位——與欄位在 CREATE TABLE 裡的宣告順序無關，必須依這個
         # 數值排序才是真正的主鍵順序。
-        info = self._con.execute(f'PRAGMA table_info("{table}")').fetchall()
+        info = self._execute(f"PRAGMA table_info({_quote_identifier(table)})").fetchall()
         pk_columns = sorted((row["pk"], row["name"]) for row in info if row["pk"] > 0)
         return [name for _, name in pk_columns]
 
     def columns(self, table: str) -> list[str]:
         self._check_table(table)
-        info = self._con.execute(f'PRAGMA table_info("{table}")').fetchall()
+        info = self._execute(f"PRAGMA table_info({_quote_identifier(table)})").fetchall()
         return [row["name"] for row in info]
 
     def rows(self, table: str) -> Iterator[dict[str, Any]]:
@@ -118,9 +192,23 @@ class SqliteSourceReader:
         # 情況下彼此順序如何都不影響資料本身。真正的替代方案（例如硬性
         # 要求所有來源表都要有主鍵）不成立：這是真實 T100 會遇到的情況，
         # 載入工具不能因為來源表沒宣告主鍵就直接放棄。
+        #
+        # 代價提醒：有 PK 的表，SQLite 可以直接用 PK 索引滿足這個
+        # ORDER BY，沿著索引串流、代價是常數。沒有 PK、退而求其次依全部
+        # 欄位排序的表就沒有這種索引可用，SQLite 必須先把整個結果集排進
+        # 暫存 b-tree（`EXPLAIN QUERY PLAN` 會顯示 `USE TEMP B-TREE FOR
+        # ORDER BY`）才能吐出第一列——實測 20 萬列的無 PK 表，第一列要等
+        # 0.124s，有 PK 的表與明寫 `ORDER BY rowid` 的表都是 0.000s。也就是
+        # 說「惰性、不整批讀進記憶體」這個保證，在無 PK 的大表上只在
+        # Python 這一側成立（不整批讀進 Python 的 list），SQLite 那一側仍然
+        # 要先把整個結果集排序完；記憶體用量與首列延遲不是常數，會隨表的
+        # 大小成長。這與「完全不寫 ORDER BY」不同：後者要不要用覆蓋索引、
+        # 要不要照 rowid 順序，是查詢優化器的實作細節，換版本、換查詢形狀
+        # 就可能改變，不是能依賴的契約；明寫 `ORDER BY rowid` 對一般
+        # rowid 表則是完全指定的全序，可以沿 b-tree 串流，不是同一回事。
         order_columns = self.primary_key(table) or self.columns(table)
-        order_clause = ", ".join(f'"{column}"' for column in order_columns)
-        cursor = self._con.execute(f'SELECT * FROM "{table}" ORDER BY {order_clause}')
+        order_clause = ", ".join(_quote_identifier(column) for column in order_columns)
+        cursor = self._execute(f"SELECT * FROM {_quote_identifier(table)} ORDER BY {order_clause}")
         for row in cursor:
             yield dict(row)
 
@@ -129,6 +217,10 @@ class SqliteSourceReader:
         # 逐列讀取再數長度來實作。否則 rows() 若因為某個缺陷少吐一列，
         # Task 11 的 row_count 檢查會分子（實際載入列數）分母（來源列數）
         # 一起錯，兩個數字剛好對得上而顯示全綠——這正是計劃 2 那個
-        # Critical 缺陷的形狀。
+        # Critical 缺陷的形狀。這個約束不是靠原始碼字面上有沒有出現某個
+        # 字串來守（換一個方法名、換一層 getattr 別名都能繞過字串比對），
+        # 而是靠 tests/pipeline/test_source.py 側錄真正送進 SQLite 的 SQL
+        # 來驗證：count() 送出的必須含 COUNT(，且不得有任何一條是
+        # SELECT * 開頭的全表掃描。
         self._check_table(table)
-        return self._con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+        return self._execute(f"SELECT COUNT(*) FROM {_quote_identifier(table)}").fetchone()[0]
