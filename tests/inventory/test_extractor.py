@@ -726,6 +726,10 @@ def test_two_schema_files_differing_only_by_case_pick_first_and_report_the_other
     (d / "a.4gl").write_text(FGL, encoding="utf-8")
     (d / "SCHEMA.SQL").write_text(SQL, encoding="utf-8")
     (d / "schema.sql").write_text(SQL, encoding="utf-8")
+    # macOS 的 APFS 預設大小寫不敏感，上面兩次寫入是同一個檔案，這個測試的前提
+    # 不成立。探測實際行為而不是猜作業系統：Linux 上的 APFS/exFAT 也可能不敏感。
+    if len(os.listdir(d)) != 3:
+        pytest.skip("檔案系統大小寫不敏感，無法同時存在 schema.sql 與 SCHEMA.SQL")
 
     inv = scan(d, event_log=log)
 
