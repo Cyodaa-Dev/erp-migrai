@@ -331,11 +331,22 @@ def _parse_transform(where: str, body: Any) -> Transform:
             ref_column=ref_column,
         )
 
-    # 只剩 CONSTANT：`value` 必須存在（哪怕值是 None／false／0），
+    # 只剩 CONSTANT：`value` 必須存在（哪怕值是 false／0），
     # 用 `in` 而非真值判斷，避免把「合法填了假值」誤判成「沒填」。
     if "value" not in body:
         raise RuleError(f"{where} 的 `transform.kind` 是 `constant`，但缺少 `value`")
     value = body["value"]
+    # `value: null` 例外——YAML 的 `value:` 後面留空就是 None，很容易不小心打出來，
+    # 而 `constant` 配 `None` 是結構壞掉：規則作者若真的想寫常數空字串，會寫
+    # `value: ""`。載入階段的 `apply_transform` 已經會拒絕這個形狀，但那太晚了：
+    # `migrai map` 會乾淨地通過（exit 0、mapping.json 寫出、mapping.csv 可審），
+    # 使用者一路走到 `migrai load` 才在那一欄的每一列吃到 E-4002。能在更早一層
+    # 判定就在更早一層大聲失敗，兩層的判定必須一致。
+    if value is None:
+        raise RuleError(
+            f"{where} 的 `transform.kind` 是 `constant`，但 `value` 是空的"
+            f'——若要寫入空字串請明確設定 `value: ""`'
+        )
     _ensure_json_serializable(where, "value", value)
     return Transform(kind=TransformKind.CONSTANT, value=value)
 

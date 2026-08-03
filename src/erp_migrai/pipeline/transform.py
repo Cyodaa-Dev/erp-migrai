@@ -187,13 +187,17 @@ def _apply_reference(transform: dict[str, Any], value: Any, *, source_id: str, w
     先過 `plan_load`，這一層仍然要為「結構壞掉的輸入」負責，不能只靠
     上游守住。
     """
-    if value is None:
-        return ""
+    # 結構檢查刻意排在 `value is None` 之前：若某個 reference 欄位整欄都是
+    # NULL，把檢查放在後面會讓壞掉的 `ref_table` 永遠不浮現——那一欄每一列
+    # 都提前 return，結構問題要等到有人填了值才爆，而那可能是好幾個月後的
+    # 另一批資料。結構是否合法與這一列的值是什麼無關，先驗結構。
     ref_table = _require_key(transform, "ref_table", where=where)
     if not ref_table:
         raise TransformError(
             f"{where}：reference 的 ref_table 是 {ref_table!r}，無法組出 external_id"
         )
+    if value is None:
+        return ""
     return build_external_id(source_id, ref_table, [value])
 
 

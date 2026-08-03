@@ -186,6 +186,9 @@ def test_value_map_none_raises_naming_where():
     with pytest.raises(TransformError) as exc:
         apply_transform(t, "anything", source_id="c3", where="ord_mast.ord_stus")
     assert "ord_mast.ord_stus" in str(exc.value)
+    # 只斷言 where 的話，這條訊息與「必須是物件」那條可以互換而測試全綠
+    # （複驗的 N10）——兩種結構壞法要給使用者不同的診斷，各自釘住關鍵詞。
+    assert "None" in str(exc.value)
 
 
 def test_value_map_non_dict_raises_naming_where():
@@ -197,6 +200,7 @@ def test_value_map_non_dict_raises_naming_where():
     with pytest.raises(TransformError) as exc:
         apply_transform(t, "anything", source_id="c3", where="t.c")
     assert "t.c" in str(exc.value)
+    assert "必須是物件" in str(exc.value)  # 與「是 None」那條不可互換，見上
 
 
 def test_value_map_missing_value_map_key_raises_naming_where():
@@ -206,6 +210,8 @@ def test_value_map_missing_value_map_key_raises_naming_where():
     with pytest.raises(TransformError) as exc:
         apply_transform(t, "anything", source_id="c3", where="t.c")
     assert "t.c" in str(exc.value)
+    assert "缺少必要的鍵" in str(exc.value)
+    assert "value_map" in str(exc.value)
 
 
 def test_value_map_missing_default_key_raises_naming_where():
@@ -271,6 +277,8 @@ def test_constant_missing_value_key_raises_naming_where():
     with pytest.raises(TransformError) as exc:
         apply_transform(t, "irrelevant", source_id="c3", where="t.c")
     assert "t.c" in str(exc.value)
+    assert "缺少必要的鍵" in str(exc.value)
+    assert "value" in str(exc.value)
 
 
 def test_constant_value_is_false():
@@ -320,6 +328,8 @@ def test_reference_missing_ref_table_key_raises_naming_where():
     with pytest.raises(TransformError) as exc:
         apply_transform(t, "C001", source_id="c3", where="ord_mast.ord_cust_no")
     assert "ord_mast.ord_cust_no" in str(exc.value)
+    assert "缺少必要的鍵" in str(exc.value)
+    assert "ref_table" in str(exc.value)
 
 
 def test_reference_ref_table_none_raises_naming_where():
@@ -358,6 +368,8 @@ def test_missing_kind_key_raises_naming_where():
     with pytest.raises(TransformError) as exc:
         apply_transform(t, "x", source_id="c3", where="prod_mast.no_kind")
     assert "prod_mast.no_kind" in str(exc.value)
+    assert "缺少必要的鍵" in str(exc.value)
+    assert "kind" in str(exc.value)
 
 
 def test_transform_error_base_class_is_exception_not_value_error():

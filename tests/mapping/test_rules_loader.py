@@ -445,9 +445,21 @@ columns:
     assert rule.transform.value is False
 
 
-def test_constant_transform_with_null_value_is_parsed(tmp_path: Path):
-    # 同上，但驗證 `value: null`——程式碼的註解明白說「哪怕值是
-    # None／false／0」都要合法，所以 None 也必須通過而不是被當成缺漏。
+def test_constant_transform_with_null_value_is_rejected_here_not_at_load_time(tmp_path: Path):
+    """`kind: constant` 配 `value: null` 必須在**這一層**就擋下來。
+
+    這條測試原本斷言相反的事（`value: null` 會被解析成 `Transform(value=None)`），
+    理由是「哪怕值是 `None`／`false`／`0` 都要合法，不能把『合法填了假值』誤判成
+    『沒填』」。那個理由對 `false`／`0` 成立，對 `None` 不成立——`constant` 配
+    `None` 是結構壞掉：規則作者若真的想寫常數空字串，會寫 `value: ""`。而
+    `value:` 後面留空是 YAML 裡極容易打出來的形狀。
+
+    Task 8 的載入階段（`apply_transform`）已經會拒絕這個形狀並吐 E-4002，但那
+    太晚了：`migrai map` 會乾淨地通過（exit 0、`mapping.json` 寫出、`mapping.csv`
+    可審），使用者一路走到 `migrai load` 才在那一欄的**每一列**吃到錯誤。
+    能在更早一層判定就在更早一層大聲失敗，而且兩層的判定必須一致——這條測試
+    釘住的正是「兩層一致」這件事。
+    """
     _write(
         tmp_path,
         "ok.yaml",
@@ -461,10 +473,40 @@ columns:
       value: null
 """,
     )
+    with pytest.raises(RuleError) as exc:
+        load_rules(CATALOG, rules_dir=tmp_path)
+    assert "cust_mast.cust_kind" in str(exc.value)
+    assert "constant" in str(exc.value)
+    assert 'value: ""' in str(exc.value)
+
+
+def test_constant_transform_with_falsy_but_real_value_is_still_parsed(tmp_path: Path):
+    """`false`／`0`／`""` 是**合法填了假值**，與 `null` 不同，必須照常通過。
+
+    上面那條拒絕 `null`，這條是它的對照組——若有人把檢查寫成 `if not value`，
+    這三個值會被一起誤殺，而那是真實規則會用到的形狀（例如常數 `active: false`）。
+    """
+    _write(
+        tmp_path,
+        "ok.yaml",
+        """
+version: 1
+columns:
+  cust_mast.cust_kind:
+    target: res.partner.ref
+    transform:
+      kind: constant
+      value: ""
+  cust_mast.cust_stus:
+    target: res.partner.active
+    transform:
+      kind: constant
+      value: false
+""",
+    )
     rules = load_rules(CATALOG, rules_dir=tmp_path)
-    rule = rules.column_rules[("cust_mast", "cust_kind")]
-    assert rule.transform.kind == TransformKind.CONSTANT
-    assert rule.transform.value is None
+    assert rules.column_rules[("cust_mast", "cust_kind")].transform.value == ""
+    assert rules.column_rules[("cust_mast", "cust_stus")].transform.value is False
 
 
 # ---------------------------------------------------------------------------
