@@ -20,14 +20,21 @@ count() 不得經由 rows() 計算）之外，另外補了：
 - `tables()` 的三個行為（排除系統表、排除 view、依名稱排序）。
 - `SourceReader` 這個 Protocol 是否真的被 `SqliteSourceReader` 滿足
   （方法存在 + 簽章一致）。
-- `close()`／context manager 的連線生命週期。
+- `close()`／context manager 的連線生命週期，以及 `__exit__` 不能吞掉
+  `with` 區塊裡拋出的例外。
 - 表名大小寫不符時，錯誤訊息要點名「大小寫不符」而不是誤導成打錯字。
+- 0-byte 的來源資料庫檔案要點名「檔案是空的」；連線本身（而不只是連線
+  之後的 `PRAGMA` 探測）踩到 `sqlite3.Error`（例如檔案沒有讀取權限）
+  也要收斂成 `SourceError`。
+- `_execute()` 的收斂本身要被直接測到（底層連線關閉後查詢），以及
+  `rows()` 疊代到一半才冒出的底層錯誤也要收斂——不能只靠 `execute()`
+  當下那一次 step 抓錯。
 
 ## 為什麼 count()／rows() 的關鍵守衛從字串比對改成行為式證明
 
 原本的實作用 `inspect.getsource` 找 `".rows("` / `".fetchall("` 這種精確
-字面樣式，比裸字串 `"rows"` / `"fetchall"` 安全一些，但複審時發現三種
-「行為上真的違反契約」的等價改法都能繞過字串比對：
+字面樣式，比裸字串 `"rows"` / `"fetchall"` 安全一些，但複審輪次 1 發現
+三種「行為上真的違反契約」的等價改法都能繞過字串比對：
 
 - `count()` 改成 `sum(1 for _ in self._iter_rows(table))`——`_iter_rows` 是
   這個實作自己新增的私有方法，字面上不含 `.rows(`。
@@ -37,14 +44,24 @@ count() 不得經由 rows() 計算）之外，另外補了：
   兩者都是「先整批取出、再逐個 yield」，回傳值仍是 `types.GeneratorType`，
   字面上也不含 `.fetchall(`。
 
-字串比對守的是「原始碼長什麼樣子」，不是「執行時真的做了什麼」。下面
-兩條測試改成側錄真正送進 SQLite 的 SQL、或用會在特定時機爆炸的資料
-逼出「有沒有提早整批讀取」的證據，不管實作內部呼叫哪個方法名稱都測得到。
+字串比對守的是「原始碼長什麼樣子」，不是「執行時真的做了什麼」。輪次 1
+把兩條守衛改成側錄真正送進 SQLite 的 SQL、或用會在特定時機爆炸的資料
+逼出「有沒有提早整批讀取」的證據。
+
+複審輪次 2 再發現：側錄 SQL 之後拿 SQL 文字去做 `"COUNT(" in sql`／
+`startswith("SELECT *")` 這種比對，仍然是樣式比對，只是從 Python 原始碼
+搬到 SQL 文字——`SELECT  * FROM t`（兩個空白）、`SELECT x.* FROM t AS x`、
+`/*c*/SELECT * FROM t`，或是留一條無害的 `COUNT(` 幌子查詢、再用真正的
+資料查詢掃全表，都繞得過去。真正穩的判斷標準不是「SQL 文字長什麼
+樣子」，而是「執行時送出了幾條資料查詢」：`count()`／`rows()` 各自只准
+送出剛好一條資料查詢（白名單檢查、`PRAGMA` 探測都先濾掉），不管實作
+內部怎麼包裝 SQL 文字，只要真的多送出一條查詢就抓得到。
 """
 
 from __future__ import annotations
 
 import inspect
+import os
 import sqlite3
 import types
 from contextlib import closing
@@ -54,6 +71,51 @@ import pytest
 
 import erp_migrai.pipeline.source as source_module
 from erp_migrai.pipeline.source import SourceError, SourceReader, SqliteSourceReader
+
+# chmod 000 在 root 下沒有意義（root 會略過檔案權限檢查），這類測試在以 root
+# 執行的環境（例如某些容器）下必須乾淨地跳過，而不是用假陽性通過或報錯。
+# 沿用 tests/test_cli.py 的既有慣例（同一個判斷式、同一種理由）。
+_IS_ROOT = hasattr(os, "getuid") and os.getuid() == 0
+
+
+def _empty_db(path: Path) -> None:
+    """建一個真的非 0 bytes、但沒有任何表的合法 SQLite 檔案。
+
+    單純 `sqlite3.connect(path).close()` 建出來的檔案是 0 bytes——SQLite
+    要等到第一次真正寫入才會把檔頭寫進磁碟。`__init__` 新增的 0-byte 檔案
+    檢查（見 `test_empty_file_raises_source_error_naming_it_as_empty`）會把
+    單純 connect 就 close 的檔案誤判成「檔案是空的」，這裡改用一個無害的
+    寫入操作，讓檔案內容是真正合法、非 0 bytes、但仍然零表的空資料庫，
+    供只需要「一個合法、可連得上、沒有表」的資料庫的測試共用。
+    """
+    with closing(sqlite3.connect(path)) as con:
+        con.execute("PRAGMA user_version = 1")
+        con.commit()
+
+
+def _spy(con: sqlite3.Connection) -> tuple[list[str], object]:
+    """包一層轉接器，側錄每一條真正送進 SQLite 底層連線的 SQL。
+
+    C1（`count()` 必須是獨立於 `rows()` 的取得路徑）與 I2（`rows()` 必須
+    只送出一條資料查詢，不能分批多次查詢）兩條守衛都需要同一種側錄能力，
+    這裡共用同一個輔助函式，而不是在兩條測試裡各寫一份幾乎一樣的轉接器。
+    回傳 `(側錄清單, 包好的連線物件)`，呼叫端把 `reader._con` 換成後者。
+    """
+    seen: list[str] = []
+    real_execute = type(con).execute
+
+    class _ExecuteSpy:
+        def __init__(self, con: sqlite3.Connection) -> None:
+            self._con = con
+
+        def __getattr__(self, name: str):
+            return getattr(self._con, name)
+
+        def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+            seen.append(sql)
+            return real_execute(self._con, sql, *args)
+
+    return seen, _ExecuteSpy(con)
 
 
 def test_primary_key_reads_composite_key_in_order(tmp_path):
@@ -177,7 +239,7 @@ def test_rows_are_deterministic_when_table_has_no_primary_key(tmp_path):
 
 def test_missing_table_raises_source_error_naming_table_and_path(tmp_path):
     db = tmp_path / "d.sqlite"
-    sqlite3.connect(db).close()
+    _empty_db(db)
     reader = SqliteSourceReader(db)
     with pytest.raises(SourceError) as exc:
         reader.count("no_such_table")
@@ -197,7 +259,7 @@ def test_missing_table_raises_source_error_for_primary_key_columns_and_rows(tmp_
     正是要證明例外在呼叫當下就發生。
     """
     db = tmp_path / "d.sqlite"
-    sqlite3.connect(db).close()
+    _empty_db(db)
     reader = SqliteSourceReader(db)
 
     with pytest.raises(SourceError):
@@ -289,6 +351,48 @@ def test_non_sqlite_file_raises_source_error_naming_path(tmp_path):
     assert str(bogus) in str(exc.value)
 
 
+def test_empty_file_raises_source_error_naming_it_as_empty(tmp_path):
+    """Minor（Mi2）：0-byte 檔案要點名「檔案是空的」，不能被誤導成表名問題。
+
+    0-byte 檔案對 SQLite 而言是合法語意——`PRAGMA schema_version` 對它一樣
+    成功，`tables()` 如實回傳 `[]`。但使用者實際指到的 0-byte 檔案，十之
+    八九是傳輸中斷、磁碟寫滿、或程式中途被砍掉留下的半成品，不是刻意
+    建立的空資料庫。若不在 `__init__` 就點名，使用者接下來只會在查表時
+    看到「表不存在」，被導向去查表名，而看不出真正原因是檔案整個是空的。
+    目錄已經被 `is_file()` 擋下，不受這裡影響，不必另外測。
+    """
+    empty = tmp_path / "empty.sqlite"
+    empty.write_bytes(b"")
+
+    with pytest.raises(SourceError) as exc:
+        SqliteSourceReader(empty)
+    assert str(empty) in str(exc.value)
+    assert "空" in str(exc.value)
+
+
+@pytest.mark.skipif(_IS_ROOT, reason="root 會略過檔案權限檢查，chmod 000 測試在 root 下沒有意義")
+def test_unreadable_database_file_raises_source_error(tmp_path):
+    """複審輪次 2 必修 1（漏網路徑之二）：`sqlite3.connect(path)` 本身不在任何 try 之內。
+
+    `__init__` 原本只把 `PRAGMA schema_version` 那次探測包進 try——但
+    `sqlite3.connect()` 自己也可能踩到 `sqlite3.Error`（檔案沒有讀取
+    權限、被其他行程鎖住、掛載點失效……），`path.is_file()` 只擋得住
+    「存在性」，擋不住這些情況。實測對 `chmod 000` 的檔案：
+    `sqlite3.OperationalError: unable to open database file` 原本會直接
+    從 `__init__` 洩漏，而不是點名路徑的 `SourceError`。
+    """
+    db = tmp_path / "d.sqlite"
+    _empty_db(db)
+    db.chmod(0o000)
+    try:
+        with pytest.raises(SourceError) as exc:
+            SqliteSourceReader(db)
+        assert str(db) in str(exc.value)
+    finally:
+        # 還原權限，讓 pytest 的 tmp_path 清理程序能刪得掉這個檔案。
+        db.chmod(0o644)
+
+
 def test_missing_table_error_hints_case_mismatch(tmp_path):
     """表名大小寫不符時，錯誤訊息要點名大小寫問題，而不是誤導成「打錯字」。
 
@@ -313,10 +417,10 @@ def test_missing_table_error_hints_case_mismatch(tmp_path):
 def test_count_issues_a_count_query_and_never_scans_rows(tmp_path):
     """`count()` 必須真的送出一條 COUNT 查詢，不能換一條路徑偷渡回 rows()。
 
-    複審發現：白箱字串比對 `".rows(" not in source` 擋得住的只有「原始碼
-    字面上寫了 `.rows(`」這一種寫法。以下三種等價改法都是「count() 依賴
-    rows() 的取得路徑」這個真正要禁止的行為，但字面上都不含 `.rows(`，
-    字串守衛完全看不見：
+    複審輪次 1 發現：白箱字串比對 `".rows(" not in source` 擋得住的只有
+    「原始碼字面上寫了 `.rows(`」這一種寫法。以下三種等價改法都是
+    「count() 依賴 rows() 的取得路徑」這個真正要禁止的行為，但字面上都
+    不含 `.rows(`，字串守衛完全看不見：
 
     - `sum(1 for _ in self._iter_rows(table))`——`_iter_rows` 是這個實作
       自己新增的私有方法，日後任何人想「重用現成的讀列邏輯」最自然的
@@ -325,10 +429,21 @@ def test_count_issues_a_count_query_and_never_scans_rows(tmp_path):
     - `len(list(self . rows (table)))`——只是多打了幾個空白，字面樣式
       `".rows("` 就不再精確匹配。
 
-    改成側錄真正送進 SQLite 底層連線的 SQL 語句：只要 `count()` 真的是
-    獨立的取得路徑，側錄到的 SQL 裡就會有一條含 `COUNT(`，且不會有任何
-    一條是 `SELECT *` 開頭的全表掃描；不管實作內部呼叫哪個方法名稱做到
-    這件事，這個行為式的判斷標準都測得到。
+    輪次 1 把守衛改成側錄真正送進 SQLite 底層連線的 SQL，斷言「有一條含
+    `COUNT(`」且「沒有任何一條是 `SELECT *` 開頭」——但複審輪次 2 發現
+    這仍然是樣式比對，只是從 Python 原始碼搬到 SQL 文字，四種寫法都能
+    真的掃全表卻通過：`SELECT  * FROM t`（兩個空白）、`SELECT x.* FROM t
+    AS x`、`/*c*/SELECT * FROM t`、甚至保留一條無害的 `COUNT(` 幌子查詢、
+    再用自己新增的 `_iter_rows` 明列欄位（不寫 `SELECT *`）掃全表。
+
+    真正穩的判斷標準不是「SQL 文字長什麼樣子」，而是「count() 執行時
+    送出了幾條資料查詢」：白名單檢查會送一條查 `sqlite_master` 的查詢
+    （不算資料查詢，過濾掉），除此之外 count() 只准再送出剛好一條資料
+    查詢，而且那條必須含 `COUNT(`——不管實作內部怎麼包裝、SQL 文字長
+    什麼樣子，只要真的多送出第二條查詢（不管是幌子還是真掃描），這裡
+    就抓得到；`SELECT COUNT(*) FROM (SELECT * FROM t)` 這種寫法雖然仍然
+    綠燈，但那本來就不是被禁止的形狀——它仍是一條獨立的 SQL 聚合，不經過
+    `rows()`。
     """
     db = tmp_path / "d.sqlite"
     with closing(sqlite3.connect(db)) as con:
@@ -341,27 +456,12 @@ def test_count_issues_a_count_query_and_never_scans_rows(tmp_path):
         con.commit()
 
     reader = SqliteSourceReader(db)
-    seen: list[str] = []
-    real_execute = type(reader._con).execute
-
-    class _ExecuteSpy:
-        """側錄每一條真正送進 SQLite 的 SQL，讓黑箱測試看得見底層取得路徑。"""
-
-        def __init__(self, con: sqlite3.Connection) -> None:
-            self._con = con
-
-        def __getattr__(self, name: str):
-            return getattr(self._con, name)
-
-        def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
-            seen.append(sql)
-            return real_execute(self._con, sql, *args)
-
-    reader._con = _ExecuteSpy(reader._con)
+    seen, reader._con = _spy(reader._con)
 
     assert reader.count("t") == 3
-    assert any("COUNT(" in sql for sql in seen), seen
-    assert not any(sql.lstrip().upper().startswith("SELECT *") for sql in seen), seen
+    data = [sql for sql in seen if "sqlite_master" not in sql and not sql.startswith("PRAGMA")]
+    assert len(data) == 1, data
+    assert "COUNT(" in data[0].upper(), data
 
 
 def test_rows_is_lazy_and_yields_before_reading_the_whole_result_set(tmp_path):
@@ -408,6 +508,110 @@ def test_rows_is_lazy_and_yields_before_reading_the_whole_result_set(tmp_path):
     assert next(it)["a"] == "y"
     with pytest.raises(RuntimeError):
         next(it)
+
+
+def test_rows_issues_only_one_data_query_even_for_non_text_columns(tmp_path):
+    """`rows()` 對非 TEXT 型別的欄位一樣不能整批 materialize。
+
+    複審輪次 2 發現：上面那條惰性守衛借用 `text_factory`，只作用在 TEXT
+    值上。實測 B8：`_iter_rows` 先把全部 rowid `fetchall()` 成一個 Python
+    list，再逐列依 rowid 查一次——這正是契約禁止的 O(N) Python 記憶體
+    佔用，但 rowid 是 INTEGER，`text_factory` 完全碰不到它，這種寫法
+    對上面那條測試是綠燈。
+
+    改成側錄真正送進 SQLite 的資料查詢有幾條（與 C1 共用 `_spy()`）：
+    白名單檢查與排序欄位查詢（PRAGMA／`sqlite_master`）先被濾掉，`rows()`
+    只准再送出剛好一條資料查詢；先抓一份 rowid 清單、再逐列補查的寫法
+    會多送出至少一條查詢，在這裡就抓得到。
+
+    ⚠️ `fetchmany(2)` 這種批次讀取是有界記憶體的合法惰性實作：`fetchmany`
+    是同一個 cursor 上的操作，不會讓 `_con.execute()` 被多呼叫一次，這裡
+    不會誤殺它。
+    """
+    db = tmp_path / "d.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.executescript(
+            "CREATE TABLE t (a CHAR(2) NOT NULL, PRIMARY KEY (a));"
+            "INSERT INTO t VALUES ('x');"
+            "INSERT INTO t VALUES ('y');"
+            "INSERT INTO t VALUES ('z');"
+        )
+        con.commit()
+
+    reader = SqliteSourceReader(db)
+    seen, reader._con = _spy(reader._con)
+
+    result = list(reader.rows("t"))
+
+    assert result == [{"a": "x"}, {"a": "y"}, {"a": "z"}]
+    data = [sql for sql in seen if "sqlite_master" not in sql and not sql.startswith("PRAGMA")]
+    assert len(data) == 1, data
+
+
+def test_rows_iteration_errors_are_wrapped_in_source_error(tmp_path):
+    """複審輪次 2 必修 1（漏網路徑之一，最嚴重）：`rows()` 疊代到一半才冒出的
+    底層錯誤，也要收斂成 `SourceError`。
+
+    `_execute()` 的 try 只包得住 `self._con.execute(sql)` 這一次 step——
+    CPython 的 `sqlite3.Connection.execute()` 會在呼叫當下先 step 一次，
+    所以「連線當下就壞掉」的檔案在那裡就抓得到；但 `_iter_rows()` 的
+    `for row in cursor` 疊代發生在 `_execute()` 的 try 範圍之外，複審對
+    一份 2000 列、檔尾 20% 被砸壞的真實資料庫實測：疊代到第 1585 列後
+    洩漏 `sqlite3.DatabaseError: database disk image is malformed`，而
+    `count()` 因為只送一條 `COUNT` 查詢，反而正確地收斂了——`rows()`
+    疊代整張表正是 Task 10 的主要用法，這條漏洞不能留著。
+
+    不需要真的建一份 2000 列、砸壞檔尾的大檔案才能重現：借用
+    `text_factory` 讓某一列的資料在轉換成 Python 值時直接丟出
+    `sqlite3.DatabaseError`（這是呼叫端回呼裡丟出的例外，sqlite3 原封
+    不動往外傳），足以逼出同一種「疊代到一半才炸」的時機。
+    """
+    db = tmp_path / "d.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.executescript(
+            "CREATE TABLE t (a CHAR(2) NOT NULL, PRIMARY KEY (a));"
+            "INSERT INTO t VALUES ('x');"
+            "INSERT INTO t VALUES ('y');"
+        )
+        con.commit()
+
+    reader = SqliteSourceReader(db)
+
+    def boom(raw: bytes) -> str:
+        raise sqlite3.DatabaseError("模擬來源資料庫在疊代到一半時才損壞")
+
+    reader._con.text_factory = boom
+
+    with pytest.raises(SourceError):
+        list(reader.rows("t"))
+
+
+def test_query_errors_are_wrapped_in_source_error(tmp_path):
+    """複審輪次 2 必修 2：`_execute()` 的收斂本身完全沒有測試守著。
+
+    Mutation 實測：把 `_execute()` 的整段 `try/except sqlite3.Error` 拿掉，
+    改成直接 `return self._con.execute(sql)`，既有全部測試依然全線通過——
+    唯一相關的 `test_non_sqlite_file_raises_source_error_naming_path` 守的
+    是 `__init__` 的 `PRAGMA schema_version` 探測，碰不到 `_execute()`。
+    這裡直接關掉底層連線，讓之後任何查詢必定丟出
+    `sqlite3.ProgrammingError`（`sqlite3.Error` 的子類別），驗證
+    `count()`／`tables()` 都收斂成 `SourceError`，而不是把底層例外類別
+    洩漏出去——同時也覆蓋了 `close()` 之後呼叫方法的行為
+    （`ProgrammingError` 經 `_execute()` 收斂，行為本來就對，只是先前
+    沒有測試斷言過）。
+    """
+    db = tmp_path / "d.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.executescript("CREATE TABLE t (a CHAR(2) NOT NULL, PRIMARY KEY (a));")
+        con.commit()
+
+    reader = SqliteSourceReader(db)
+    reader._con.close()
+
+    with pytest.raises(SourceError):
+        reader.count("t")
+    with pytest.raises(SourceError):
+        reader.tables()
 
 
 def test_rows_yield_plain_dicts_not_sqlite_row_objects(tmp_path):
@@ -471,7 +675,7 @@ def test_sqlite_source_reader_satisfies_source_reader_protocol(tmp_path):
     `SqliteSourceReader` 沒有實作的方法，這條測試就會先炸。
     """
     db = tmp_path / "d.sqlite"
-    sqlite3.connect(db).close()
+    _empty_db(db)
     reader = SqliteSourceReader(db)
     assert isinstance(reader, SourceReader)
 
@@ -483,15 +687,23 @@ def test_sqlite_source_reader_signatures_match_protocol():
     與順序）呼叫方法，光靠 `@runtime_checkable` 的 `isinstance` 擋不住
     `SqliteSourceReader.rows` 把參數 `table` 偷偷改名成 `table_name`這種
     介面漂移——呼叫端如果用關鍵字引數呼叫，只會在執行期才炸，而不是在
-    這裡就被抓到。這裡直接比對 `inspect.signature` 的參數名稱與順序，
-    兩邊漂移就會在這條測試上先炸開，不必等到 Task 7 才發現。
+    這裡就被抓到。
+
+    複審輪次 2 發現：`list(inspect.signature(...).parameters)` 只拿到參數
+    「名稱與順序」，漏掉兩類真實漂移——把 `table` 改成 positional-only
+    （`def rows(self, table: str, /)`）：呼叫端若習慣用關鍵字引數呼叫
+    `reader.rows(table="t")` 會直接炸掉；`primary_key()` 的回傳型別註記
+    從 `list[str]` 偷偷改成 `set[str]`：介面文件與實作無聲不一致。兩者
+    的參數名稱清單都不變，舊斷言看不出來。改成直接比較整個
+    `inspect.signature` 的字串表示（含參數 kind 與型別註記），才能同時
+    守住這兩類。
     """
     protocol = SourceReader
     impl = SqliteSourceReader
     for name in ("tables", "primary_key", "columns", "rows", "count"):
-        protocol_params = list(inspect.signature(getattr(protocol, name)).parameters)
-        impl_params = list(inspect.signature(getattr(impl, name)).parameters)
-        assert protocol_params == impl_params, name
+        want = inspect.signature(getattr(protocol, name))
+        got = inspect.signature(getattr(impl, name))
+        assert str(want) == str(got), f"{name}: {want} != {got}"
 
 
 def test_close_closes_the_underlying_connection(tmp_path):
@@ -504,7 +716,7 @@ def test_close_closes_the_underlying_connection(tmp_path):
     不要報錯），那超出目前用得到的範圍。
     """
     db = tmp_path / "d.sqlite"
-    sqlite3.connect(db).close()
+    _empty_db(db)
     reader = SqliteSourceReader(db)
     reader.close()
     with pytest.raises(sqlite3.ProgrammingError):
@@ -514,11 +726,25 @@ def test_close_closes_the_underlying_connection(tmp_path):
 def test_context_manager_closes_connection_on_exit(tmp_path):
     """`with SqliteSourceReader(...) as reader:` 離開區塊後連線要關閉。"""
     db = tmp_path / "d.sqlite"
-    sqlite3.connect(db).close()
+    _empty_db(db)
     with SqliteSourceReader(db) as reader:
         assert reader.tables() == []
     with pytest.raises(sqlite3.ProgrammingError):
         reader._con.execute("SELECT 1")
+
+
+def test_context_manager_does_not_swallow_exceptions(tmp_path):
+    """複審輪次 2 Minor（Mi1）：`__exit__` 不能吞掉 `with` 區塊裡拋出的例外。
+
+    Mutation 實測：把 `__exit__` 的回傳型別從 `-> None`（正確：不吞例外）
+    改成 `return True`（吞掉 `with` 區塊裡所有例外），既有全部測試依然
+    全線通過——沒有任何測試在 `with` 區塊裡故意拋過例外。這裡直接驗證
+    `with` 區塊拋出的 `ValueError` 真的會往外傳。
+    """
+    db = tmp_path / "d.sqlite"
+    _empty_db(db)
+    with pytest.raises(ValueError), SqliteSourceReader(db):
+        raise ValueError("必須傳出去")
 
 
 def test_decimal_column_from_sqlite_is_float_only_when_fractional(tmp_path):

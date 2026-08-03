@@ -87,10 +87,23 @@ class SqliteSourceReader:
         # 錯誤應該直接點名「資料庫本身讀不到」，而不是被誤導去查表名。
         if not path.is_file():
             raise SourceError(f"讀不到來源資料庫：{path}")
+        # 0 bytes 對 SQLite 而言是合法語意——代表一個全新、還沒寫入任何
+        # 內容的空資料庫（PRAGMA schema_version 對它一樣會成功，
+        # tables() 也會如實回傳 []）。但使用者實際指到的 0-byte 檔案，
+        # 十之八九是傳輸中斷、磁碟寫滿、或程式中途被砍掉留下的半成品，
+        # 不是刻意建立的空資料庫。若不在這裡點名，使用者接下來只會看到
+        # 「表不存在」，被導向去查表名，而看不出真正原因是檔案整個是空的。
+        if path.stat().st_size == 0:
+            raise SourceError(f"讀不到來源資料庫（檔案是空的）：{path}")
         self._path = path
-        self._con = sqlite3.connect(path)
-        self._con.row_factory = sqlite3.Row
+        con: sqlite3.Connection | None = None
         try:
+            # sqlite3.connect() 本身也可能踩到 sqlite3.Error（檔案沒有讀取
+            # 權限、被其他行程鎖住、掛載點失效……），與下面的 PRAGMA 探測
+            # 共用同一個 try——兩者都要收斂成點名路徑的 SourceError，不能
+            # 讓底層例外類別洩漏出去。
+            con = sqlite3.connect(path)
+            con.row_factory = sqlite3.Row
             # sqlite3.connect() 本身是惰性的：對「檔案存在、但內容根本不是
             # SQLite 資料庫」的檔案（改過副檔名的 CSV、半下載的檔案、
             # Git LFS pointer……）一樣會靜默成功回傳連線物件，錯誤要等到
@@ -98,26 +111,48 @@ class SqliteSourceReader:
             # sqlite3.DatabaseError。PRAGMA schema_version 對任何合法的
             # SQLite 檔案（甚至是全新的空檔案）都能立刻執行，用它在連線
             # 當下就探測一次，把這類錯誤提早轉成點名路徑的 SourceError。
-            self._con.execute("PRAGMA schema_version")
+            con.execute("PRAGMA schema_version")
         except sqlite3.Error as exc:
-            self._con.close()
+            if con is not None:
+                con.close()
             raise SourceError(
                 f"讀不到來源資料庫（檔案內容不是有效的 SQLite 資料庫）：{path}"
             ) from exc
+        self._con = con
 
     def _execute(self, sql: str) -> sqlite3.Cursor:
-        """所有查詢的統一入口：把底層 `sqlite3.Error` 一律包成 `SourceError`。
+        """查詢的第一步：把 `self._con.execute(sql)` 這一次 step 冒出的
+        `sqlite3.Error` 包成 `SourceError`。
 
-        `__init__` 的探測只擋得住「連線當下就能發現」的損壞；來源資料庫在
-        連線之後才損壞（例如另一個行程正在覆寫檔案），或個別查詢踩到其他
-        底層錯誤，都要在這裡收斂。載入階段（Task 10／11）要把來源讀取的
-        錯誤轉成 `E-4001`，只能認得 `SourceError` 這一種例外類型——任何
-        底層的 `sqlite3.Error` 洩漏出去，這條轉換就會漏接。
+        CPython 的 `sqlite3.Connection.execute()` 會在呼叫當下先 step 一次，
+        所以「連線當下就能發現」的錯誤在這裡就抓得到。但 SQLite 本身是
+        惰性的，後續每疊代一次才 fetch 下一列，真正的錯誤（來源資料庫在
+        連線之後才損壞、檔案只有後段被截斷……）常常要疊代到後面才會冒出
+        來，發生在這個 try 的範圍之外——那一段由 `_fetch_iter()` 負責收斂，
+        兩者合起來才是完整的入口，載入階段（Task 10／11）才能只認
+        `SourceError` 這一種例外類型做轉換。
         """
         try:
             return self._con.execute(sql)
         except sqlite3.Error as exc:
             raise SourceError(f"查詢來源資料庫 {self._path} 時發生錯誤：{exc}") from exc
+
+    def _fetch_iter(self, cursor: sqlite3.Cursor) -> Iterator[sqlite3.Row]:
+        """查詢的第二步：疊代 `cursor`，把沿途冒出的 `sqlite3.Error` 收斂成
+        `SourceError`。
+
+        `_execute()` 只包得住 `execute()` 那一次 step；`fetchall()`／
+        `fetchone()`／直接疊代 cursor，底層做的事都是「向 SQLite 要下一列」，
+        一樣可能各自踩到 `sqlite3.Error`（另一個行程正在覆寫檔案、大檔案
+        只有部分內容毀損……），且往往要疊代到後面幾列才會冒出來。
+        `tables()`／`primary_key()`／`columns()`／`count()` 的
+        `fetchall()`／`fetchone()`，以及 `rows()` 的逐列疊代，全部改經
+        這個疊代器收斂，不再各自裸執行。
+        """
+        try:
+            yield from cursor
+        except sqlite3.Error as exc:
+            raise SourceError(f"讀取來源資料庫 {self._path} 時發生錯誤：{exc}") from exc
 
     def close(self) -> None:
         """關閉底層 SQLite 連線。
@@ -135,11 +170,15 @@ class SqliteSourceReader:
         self.close()
 
     def tables(self) -> list[str]:
-        rows = self._execute(
-            "SELECT name FROM sqlite_master"
-            " WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            " ORDER BY name"
-        ).fetchall()
+        rows = list(
+            self._fetch_iter(
+                self._execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                    " ORDER BY name"
+                )
+            )
+        )
         return [row["name"] for row in rows]
 
     def _check_table(self, table: str) -> None:
@@ -171,13 +210,17 @@ class SqliteSourceReader:
         # PRAGMA table_info 的 pk 欄位：0 表示不是主鍵，非 0 是複合主鍵裡的
         # 1-based 序位——與欄位在 CREATE TABLE 裡的宣告順序無關，必須依這個
         # 數值排序才是真正的主鍵順序。
-        info = self._execute(f"PRAGMA table_info({_quote_identifier(table)})").fetchall()
+        info = list(
+            self._fetch_iter(self._execute(f"PRAGMA table_info({_quote_identifier(table)})"))
+        )
         pk_columns = sorted((row["pk"], row["name"]) for row in info if row["pk"] > 0)
         return [name for _, name in pk_columns]
 
     def columns(self, table: str) -> list[str]:
         self._check_table(table)
-        info = self._execute(f"PRAGMA table_info({_quote_identifier(table)})").fetchall()
+        info = list(
+            self._fetch_iter(self._execute(f"PRAGMA table_info({_quote_identifier(table)})"))
+        )
         return [row["name"] for row in info]
 
     def rows(self, table: str) -> Iterator[dict[str, Any]]:
@@ -213,7 +256,7 @@ class SqliteSourceReader:
         order_columns = self.primary_key(table) or self.columns(table)
         order_clause = ", ".join(_quote_identifier(column) for column in order_columns)
         cursor = self._execute(f"SELECT * FROM {_quote_identifier(table)} ORDER BY {order_clause}")
-        for row in cursor:
+        for row in self._fetch_iter(cursor):
             yield dict(row)
 
     def count(self, table: str) -> int:
@@ -223,8 +266,9 @@ class SqliteSourceReader:
         # 一起錯，兩個數字剛好對得上而顯示全綠——這正是計劃 2 那個
         # Critical 缺陷的形狀。這個約束不是靠原始碼字面上有沒有出現某個
         # 字串來守（換一個方法名、換一層 getattr 別名都能繞過字串比對），
-        # 而是靠 tests/pipeline/test_source.py 側錄真正送進 SQLite 的 SQL
-        # 來驗證：count() 送出的必須含 COUNT(，且不得有任何一條是
-        # SELECT * 開頭的全表掃描。
+        # 而是靠 tests/pipeline/test_source.py 側錄真正送進 SQLite 的資料
+        # 查詢有幾條來驗證：除了白名單檢查那一條 sqlite_master 查詢，
+        # count() 只准再送出剛好一條資料查詢，且那條必須含 COUNT(。
         self._check_table(table)
-        return self._execute(f"SELECT COUNT(*) FROM {_quote_identifier(table)}").fetchone()[0]
+        cursor = self._execute(f"SELECT COUNT(*) FROM {_quote_identifier(table)}")
+        return next(self._fetch_iter(cursor))[0]
