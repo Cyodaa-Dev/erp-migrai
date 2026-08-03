@@ -33,6 +33,14 @@ def build_case(case_dir: Path) -> tuple[int, int]:
     db_path = case_dir / "data" / "data.sqlite"
     db_path.unlink(missing_ok=True)
 
+    # executescript() 在 autocommit 模式下逐句立即生效：schema.sql／seed.sql
+    # 若中途語法錯誤，錯誤前已執行的敘述仍然落地在磁碟上的 data.sqlite——
+    # 留下一個 schema 完整、PRAGMA integrity_check 說 ok、只是少了幾列的
+    # 半成品。這種半成品比完全沒有輸出更危險：下游（Task 6／11）讀得進去、
+    # 算得出金額，只是數字錯的，會被誤判成「遷移少了資料」而不是「語料
+    # 根本沒建完」。所以失敗時要把半成品刪掉，寧可讓下游讀不到檔案，也不要
+    # 讀到少列的檔案。
+    built = False
     con = sqlite3.connect(db_path)
     try:
         con.executescript(schema_sql)
@@ -40,13 +48,18 @@ def build_case(case_dir: Path) -> tuple[int, int]:
 
         tables = [
             row[0]
-            for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            for row in con.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
         ]
         num_rows = sum(
-            con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in tables
+            con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] for table in tables
         )
+        built = True
     finally:
         con.close()
+        if not built:
+            db_path.unlink(missing_ok=True)
 
     return len(tables), num_rows
 
@@ -72,17 +85,20 @@ def main() -> int:
 
     # 一個 case 的 SQL 有錯不能讓其餘 case 陪葬（precedent：
     # update_golden.main()），但整體 exit code 必須非 0。
+    #
+    # 攔截範圍不能只有 sqlite3.Error：data/ 目錄唯讀、schema.sql 不是 UTF-8、
+    # data.sqlite 這個路徑被佔用成目錄……這些都會讓某一個 case 噴出
+    # PermissionError／UnicodeDecodeError／OSError，若沒攔到就會讓 main()
+    # 直接中斷、後面排序在後的好 case 完全沒被處理到。
     failed_cases: list[tuple[str, str]] = []
-    succeeded = 0
 
     for case in cases:
         try:
             num_tables, num_rows = build_case(case)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, OSError, UnicodeDecodeError) as exc:
             failed_cases.append((case.name, str(exc)))
             continue
 
-        succeeded += 1
         print(f"✓ {case.name}：{num_tables} 表 / {num_rows} 列 → {case / 'data' / 'data.sqlite'}")
 
     if failed_cases:

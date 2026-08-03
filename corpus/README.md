@@ -22,7 +22,7 @@ corpus/caseNN_<主題>/
 ├─ src/SYNTHETIC            合成語料聲明（缺此檔則 synthetic 會是 false）
 ├─ src/*.4gl                合成 Genero 程式
 ├─ src/schema.sql           來源表 DDL
-├─ data/seed.sql            合成來源資料（data.sqlite 不進 git，於載入階段由此生成）
+├─ data/seed.sql            合成來源資料（data.sqlite 不進 git，由 make corpus 生成）
 ├─ expected/inventory.json  golden：migrai scan 應該吐出的內容
 └─ expected/mapping.json    golden：migrai map 應該吐出的內容
 ```
