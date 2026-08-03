@@ -565,6 +565,15 @@ def test_rows_iteration_errors_are_wrapped_in_source_error(tmp_path):
     `text_factory` 讓某一列的資料在轉換成 Python 值時直接丟出
     `sqlite3.DatabaseError`（這是呼叫端回呼裡丟出的例外，sqlite3 原封
     不動往外傳），足以逼出同一種「疊代到一半才炸」的時機。
+
+    🔴 引信的裝法很講究，這一條原本是**假的**：`text_factory` 若寫成無條件
+    發作，`rows()` 的第一件事 `_check_table()` → `tables()` 那條
+    `sqlite_master` 查詢回傳的表名本身就是 TEXT，引信在那裡就炸了，測試
+    從頭到尾走不到 `_iter_rows`。複審實測：把 `_iter_rows` 的
+    `for row in self._fetch_iter(cursor)` 原樣退回漏洞形狀的
+    `for row in cursor`，這條測試依然是綠的——它量的是 `tables()`，不是
+    docstring 講的那條路徑。所以引信要**先取走第一列之後才裝**、而且只對
+    第二列發作，強迫錯誤真的發生在疊代途中。
     """
     db = tmp_path / "d.sqlite"
     with closing(sqlite3.connect(db)) as con:
@@ -578,12 +587,17 @@ def test_rows_iteration_errors_are_wrapped_in_source_error(tmp_path):
     reader = SqliteSourceReader(db)
 
     def boom(raw: bytes) -> str:
-        raise sqlite3.DatabaseError("模擬來源資料庫在疊代到一半時才損壞")
+        value = raw.decode()
+        if value == "y":
+            raise sqlite3.DatabaseError("模擬來源資料庫只有後半段損壞")
+        return value
 
-    reader._con.text_factory = boom
+    rows = reader.rows("t")
+    assert next(rows) == {"a": "x"}  # 第一列必須先吐得出來，錯誤才算「疊代到一半」
+    reader._con.text_factory = boom  # 取走第一列之後才裝引信
 
     with pytest.raises(SourceError):
-        list(reader.rows("t"))
+        list(rows)
 
 
 def test_query_errors_are_wrapped_in_source_error(tmp_path):
