@@ -23,6 +23,8 @@ from erp_migrai.events import EventLog, Stage
 from erp_migrai.mapping.catalog import OdooField, OdooModel, load_catalog
 from erp_migrai.mapping.engine import MapFailed, _resolve_duplicate_model_mappings, build_mapping
 from erp_migrai.mapping.models import (
+    TABLE_CONFLICT_COLUMN_LABEL,
+    TARGET_CONFLICT_COLUMN_LABEL,
     ConflictKind,
     ModelMapping,
     Tier,
@@ -309,6 +311,12 @@ def test_target_conflict_spans_auto_and_needs_human_tiers_like_case03(tmp_path: 
     e2001_events = [e for e in log.events if e["error_code"] == "E-2001"]
     assert len(e2001_events) == 1
     assert log.has_fatal(Stage.MAP)
+
+    # `events.jsonl` 與 `mapping.csv` 必須對同一筆衝突講同樣的話。engine 原本
+    # 自己寫死 `conflict.column or "(整張表)"`，於是 CSV 標成「(多個來源欄位)」、
+    # 事件訊息卻標成「(整張表)」——讀事件的人會跑去查一張其實對得上模型的表。
+    assert TARGET_CONFLICT_COLUMN_LABEL in e2001_events[0]["message"]
+    assert TABLE_CONFLICT_COLUMN_LABEL not in e2001_events[0]["message"]
 
 
 def test_two_different_source_tables_targeting_same_field_is_not_a_conflict(tmp_path: Path):
@@ -1044,6 +1052,12 @@ def test_table_with_no_table_rule_and_contradicting_column_rules_is_table_confli
     assert conflict.column is None
     assert conflict.table == "weird_tbl2"
     assert conflict.candidates == ["product.template", "res.partner"]
+
+    # 表級衝突的事件訊息仍然標「(整張表)」——與 target 級那條測試互為對照，
+    # 兩種 kind 的標籤都被釘住，共用查表不會把其中一種悄悄換成另一種。
+    e2001 = [e for e in log.events if e["error_code"] == "E-2001"]
+    assert TABLE_CONFLICT_COLUMN_LABEL in e2001[0]["message"]
+    assert TARGET_CONFLICT_COLUMN_LABEL not in e2001[0]["message"]
 
     assert len(mapping.unmapped) == 2
     assert {u.column for u in mapping.unmapped} == {"a_col", "b_col"}

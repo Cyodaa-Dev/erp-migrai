@@ -118,14 +118,18 @@ exit 1。這正是這項檢查存在的理由：抓出「同一筆記錄的同�
 `tests/mapping/test_engine.py` 裡 Task 4.5 新增的測試），只是這個具體的示範
 案例已經不再示範衝突，而是示範衝突被抓到、被修正的完整流程。
 
-🔴 `sale.order.name` 是 `required=True` 且有
+`sale.order.name` 是 `required=True` 且有
 `default=lambda self: _('New')`（Odoo 內建的自動編號機制，Odoo 17 原始碼
 `addons/sale/models/sale_order.py` 第 51～55 行）。用匯入資料寫入 `name` 時
-Odoo 會不會忽略它、改用自動編號覆寫掉——這件事本任務沒有 Odoo 環境可以實測，
-留給未來載入階段的 CI 整合測試驗證。若實測發現 Odoo 真的會覆寫：`ord_no` 的
-可追溯性依然不會遺失，因為 `ord_no` 是 `ord_mast` 的主鍵，載入階段會用它組成
-external_id（`migrai.<source_id>.ord_mast.<ord_no>`），來源系統的原始單號永遠
-可以透過那個 external_id 追溯回去。
+Odoo 會不會改用自動編號覆寫掉？已對同一份原始碼的 `create()` 核對（第
+814～825 行）：序號只在 `vals.get('name', _("New")) == _("New")` 時才套用，
+**明確傳入的 `ord_no` 會被完整保留**。
+
+殘留的窄邊界：某筆 `ord_no` 的值剛好等於當前語系下 `_("New")` 的翻譯字串時，
+那一筆會被序號蓋掉。即使發生，`ord_no` 的可追溯性也不會遺失——`ord_no` 是
+`ord_mast` 的主鍵，載入階段會用它組成 external_id
+（`migrai.<source_id>.ord_mast.<ord_no>`），來源系統的原始單號永遠可以透過
+那個 external_id 追溯回去。
 
 ## 其餘未對應欄位（`unmapped`）
 

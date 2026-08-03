@@ -55,6 +55,32 @@ class ConflictKind(StrEnum):
     TARGET = "target"
 
 
+# `TABLE` 與 `TARGET` 兩種衝突的 `column` 都是 `None`，但兩者要對人顯示成不同
+# 的字面值：`TABLE` 是整張表對不上模型；`TARGET` 是這張表對得上模型、只是有
+# 好幾個來源欄位搶同一個目標欄位。借用同一個標籤會讓讀者白白跑去查一個其實
+# 對得上模型的表。標籤放在 models 而不是 writer，是因為兩個產出——`mapping.csv`
+# （writer）與 `events.jsonl` 的 `E-2001` 訊息（engine）——必須對同一筆衝突講
+# 同樣的話；先前標籤只住在 writer，engine 自己寫死 `or "(整張表)"`，於是 CSV
+# 修好了、事件訊息還在誤導。
+TABLE_CONFLICT_COLUMN_LABEL = "(整張表)"
+TARGET_CONFLICT_COLUMN_LABEL = "(多個來源欄位)"
+
+# 不對應單一來源欄位的 kind → 顯示標籤。刻意不設預設值：未來新增第四種 kind
+# 卻忘記補標籤時，`KeyError` 直接炸開，而不是靜默套用某個看似合理、實則錯誤的
+# 標籤。`ConflictKind.COLUMN` 不在表內——它有真正的 `column`，不需要標籤。
+NON_COLUMN_CONFLICT_LABELS = {
+    ConflictKind.TABLE: TABLE_CONFLICT_COLUMN_LABEL,
+    ConflictKind.TARGET: TARGET_CONFLICT_COLUMN_LABEL,
+}
+
+
+def conflict_column_label(conflict) -> str:
+    """一筆衝突在對人顯示時，`source_column` 那一格該寫什麼。"""
+    if conflict.kind == ConflictKind.COLUMN:
+        return conflict.column
+    return NON_COLUMN_CONFLICT_LABELS[conflict.kind]
+
+
 def tier_for(confidence: int) -> Tier:
     """把 0-100 的可信度換成分層。超出範圍代表計算有誤，大聲失敗。"""
     if not 0 <= confidence <= 100:

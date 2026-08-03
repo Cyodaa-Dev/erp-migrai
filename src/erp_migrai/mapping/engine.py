@@ -38,6 +38,7 @@ from erp_migrai.mapping.models import (
     Transform,
     TransformKind,
     UnmappedColumn,
+    conflict_column_label,
     tier_for,
 )
 from erp_migrai.mapping.naming import name_score
@@ -238,8 +239,9 @@ def build_mapping(
     # `UnmappedColumn` 只有 `table`／`column`／`type`／`reason` 四個欄位，
     # 上面這個鍵字面上就涵蓋了全部——不需要額外檢查或縱深防禦。
     unmapped.sort(key=lambda u: (u.table, u.column, u.type, u.reason))
-    # conflicts 的 `column` 現在可能是 `None`（表級衝突，見 Important 3 的
-    # `kind` 判別欄位），`None` 不能直接與 `str` 比較，這裡用 `or ""` 只在
+    # conflicts 的 `column` 可能是 `None`（`TABLE` 表級衝突，見 Important 3
+    # 的 `kind` 判別欄位；Task 4.5 之後 `TARGET` 也是），`None` 不能直接與
+    # `str` 比較，這裡用 `or ""` 只在
     # 排序鍵裡把它當成空字串——這不影響輸出裡真正的 `column` 欄位（那裡仍然
     # 是 `None`）。這樣做不會與「欄位級衝突剛好欄位名稱是空字串」搞混：
     # Critical 1 修正後，空字串欄位名一律在 `_normalize_columns` 被歸類為
@@ -258,7 +260,7 @@ def build_mapping(
         event_log.emit(
             "map.conflict",
             code=E_2001,
-            message=f"{conflict.table}.{conflict.column or '(整張表)'}：{conflict.reason}",
+            message=f"{conflict.table}.{conflict_column_label(conflict)}：{conflict.reason}",
             details={
                 "table": conflict.table,
                 "column": conflict.column,
@@ -1121,9 +1123,11 @@ def _build_stats(
 ) -> MappingStats:
     """從實際產出的清單算出統計，不維護平行計數器——避免計數與清單脫鉤漂移。
 
-    `conflicts` 裡 `kind == ConflictKind.TABLE` 的項目是表級衝突（表對不上
-    模型，或欄位規則彼此矛盾），不對應任何一個真實的來源欄位（該表的欄位
-    另外各自進了 `unmapped`），所以不計入 `source_columns`。
+    `source_columns` 只加計 `kind == ConflictKind.COLUMN` 的衝突——只有它
+    對應到一個真實的來源欄位。`TABLE`（表對不上模型，或欄位規則彼此矛盾，
+    該表的欄位另外各自進了 `unmapped`）與 `TARGET`（同一個目標欄位被多個
+    來源欄位搶，那些來源欄位本身都已經在 `mappings` 裡計過了）都不對應到
+    新的來源欄位，計入會重複計算或憑空多出分母。
     """
     mapped_columns = len(mappings)
     column_level_conflicts = sum(

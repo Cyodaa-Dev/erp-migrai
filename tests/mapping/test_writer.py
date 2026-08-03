@@ -25,6 +25,8 @@ from jsonschema import ValidationError
 import erp_migrai.mapping as mapping_package
 from erp_migrai.mapping.models import (
     SCHEMA_VERSION,
+    TABLE_CONFLICT_COLUMN_LABEL,
+    TARGET_CONFLICT_COLUMN_LABEL,
     ConflictKind,
     FieldMapping,
     Mapping,
@@ -39,8 +41,6 @@ from erp_migrai.mapping.models import (
     UnmappedColumn,
 )
 from erp_migrai.mapping.writer import (
-    TABLE_CONFLICT_COLUMN_LABEL,
-    TARGET_CONFLICT_COLUMN_LABEL,
     MappingSchemaError,
     MappingSerializationError,
     validate_mapping,

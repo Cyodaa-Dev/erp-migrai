@@ -42,7 +42,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator, ValidationError
 
-from erp_migrai.mapping.models import ConflictKind, Mapping, TransformKind
+from erp_migrai.mapping.models import Mapping, TransformKind, conflict_column_label
 
 SCHEMA_PATH = Path(__file__).parent / "schema" / "mapping.schema.json"
 
@@ -67,22 +67,6 @@ CSV_HEADER = [
 # 半形逗號打架（雖然 csv 模組本來就會正確加引號跳脫逗號，但全形分號讓人在
 # 試算表裡用眼睛掃過去就能分辨「這是好幾筆理由」，不必依賴引號有沒有顯示）。
 _REASONS_JOIN = "；"
-
-# `MappingConflict.kind == ConflictKind.TABLE` 時 `column` 是 `None`——這是
-# 整張表對不上模型，不對應任何單一來源欄位。CSV 裡仍然要有一列讓人看到「這張
-# 表整個沒對上」，`source_column` 用這個固定字面值顯示，不留空、也不用空字串
-# ——留空或空字串會讓人誤以為這是一個名稱剛好是空字串的欄位級衝突，這個字面值
-# 讓表級衝突在 CSV 裡一眼可辨識，且與 `engine.py` 既有的
-# `conflict.column or "(整張表)"` 訊息慣例一致。
-TABLE_CONFLICT_COLUMN_LABEL = "(整張表)"
-
-# `MappingConflict.kind == ConflictKind.TARGET`（Task 4.5）時 `column` 同樣是
-# `None`——但語意跟 `TABLE` 不同：不是整張表對不上模型，而是同一張表裡有
-# 一個以上的來源欄位都對應到同一個目標欄位。刻意用專屬標籤、不直接沿用
-# `TABLE_CONFLICT_COLUMN_LABEL`：借用會讓 CSV 讀者誤以為這張表整個沒對上
-# 模型，白白跑去查一個其實對得上模型的表；真正該看的是這一列的 `reasons`
-# 欄位裡點名的那幾個互相搶同一個目標的來源欄位。
-TARGET_CONFLICT_COLUMN_LABEL = "(多個來源欄位)"
 
 _TIER_UNMAPPED = "unmapped"
 _TIER_CONFLICT = "conflict"
@@ -243,19 +227,12 @@ def _unmapped_row(u) -> list[str]:
     ]
 
 
-_NON_COLUMN_CONFLICT_LABELS = {
-    ConflictKind.TABLE: TABLE_CONFLICT_COLUMN_LABEL,
-    ConflictKind.TARGET: TARGET_CONFLICT_COLUMN_LABEL,
-}
-
-
 def _conflict_row(c) -> list[str]:
     # 這個專案有前例：一個「無條件收尾」的最後分支，在新增 enum 值時會悄悄
-    # 把新值吞進錯誤的既有分支。這裡改成明確查表：`ConflictKind.COLUMN` 走
-    # 自己的分支，其餘的 kind 一律查 `_NON_COLUMN_CONFLICT_LABELS`——沒有
-    # 對應的標籤時 `KeyError` 直接炸開，而不是靜默套用某個看似合理、實則
-    # 錯誤的標籤（例如未來再新增第四種 kind 卻忘記在這裡補標籤）。
-    column = c.column if c.kind == ConflictKind.COLUMN else _NON_COLUMN_CONFLICT_LABELS[c.kind]
+    # 把新值吞進錯誤的既有分支。`conflict_column_label` 改成明確查表，沒有
+    # 對應標籤時 `KeyError` 直接炸開；且它與 engine 的 `E-2001` 事件訊息
+    # 共用，兩份產出不會再對同一筆衝突講不同的話。
+    column = conflict_column_label(c)
     reasons = [c.reason]
     if c.candidates:
         reasons.append(f"並列候選：{'、'.join(c.candidates)}")

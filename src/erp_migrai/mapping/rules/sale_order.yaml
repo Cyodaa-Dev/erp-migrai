@@ -63,15 +63,19 @@ columns:
   # 下面把兩條規則都改正：ord_cust_ref 明確對到 client_order_ref，
   # ord_no 明確對到 name。
   #
-  # 🔴 sale.order.name 是 required=True 且有
-  # default=lambda self: _('New')（Odoo 內建自動編號機制，見 Odoo 17
-  # 原始碼 addons/sale/models/sale_order.py 第 51～55 行）。透過匯入資料
-  # 指定 name 時，Odoo 會不會用自己的自動編號覆寫掉匯入值——這件事本機
-  # 沒有 Odoo 環境可以驗證，必須留到後續的 CI 整合測試以載入階段實測
-  # 確認。若實測發現 Odoo 真的會覆寫：ord_no 的可追溯性依然不會遺失，
-  # 因為 ord_no 是 ord_mast 的主鍵，載入階段會用它組成 external_id
-  # （`migrai.<source_id>.ord_mast.<ord_no>`），來源系統的原始單號永遠
-  # 可以透過那個 external_id 追溯回去，不依賴 name 欄位是否保留原值。
+  # sale.order.name 是 required=True 且有 default=lambda self: _('New')
+  # （Odoo 內建自動編號機制，Odoo 17 原始碼
+  # addons/sale/models/sale_order.py 第 51～55 行）。已對同一份原始碼的
+  # create() 核對（第 814～825 行）：序號只在
+  # `vals.get('name', _("New")) == _("New")` 時才套用，也就是只有 name
+  # 缺失、或值剛好等於當前語系的 _("New") 翻譯字串時才會被覆寫。明確傳入
+  # 的 ord_no 會被完整保留。
+  #
+  # 殘留的窄邊界：某筆 ord_no 的值剛好等於 _("New") 的翻譯字串時，那一筆
+  # 會被序號蓋掉。即使發生，ord_no 的可追溯性也不會遺失——ord_no 是
+  # ord_mast 的主鍵，載入階段會用它組成 external_id
+  # （`migrai.<source_id>.ord_mast.<ord_no>`），原始單號永遠可以透過那個
+  # external_id 追溯回去，不依賴 name 欄位是否保留原值。
   ord_mast.ord_no:
     target: sale.order.name
   ord_mast.ord_cust_ref:
