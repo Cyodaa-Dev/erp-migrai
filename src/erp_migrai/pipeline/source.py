@@ -53,7 +53,11 @@ class SourceReader(Protocol):
     """
 
     def tables(self) -> list[str]:
-        """來源資料庫裡的所有表名（不含 `sqlite_% ` 之類的系統表）。"""
+        """來源資料庫裡的所有表名，依名稱排序，不含來源資料庫自己的系統表。
+
+        「哪些算系統表」由各實作依自己的資料庫種類判斷——這個介面不知道也
+        不該知道底下是哪一種資料庫。
+        """
         ...
 
     def primary_key(self, table: str) -> list[str]:
