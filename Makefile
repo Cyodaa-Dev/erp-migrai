@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install lint format test test-all update-golden demo
+.PHONY: help install lint format test test-all update-golden demo corpus
 
 OUT ?= out/demo
 
@@ -38,3 +38,6 @@ demo:  ## 對合成語料跑一次 scan → map，五分鐘看到第一個結果
 
 update-golden:  ## 重新產生 corpus 的 golden 檔（diff 必須人工審過才 commit）
 	uv run python -m erp_migrai.tools.update_golden
+
+corpus:  ## 由 schema.sql 與 seed.sql 產生各 case 的 data.sqlite（不進 git）
+	uv run python -m erp_migrai.tools.build_corpus
