@@ -13,7 +13,38 @@ from erp_migrai.pipeline.planner import build_external_id
 
 
 class TransformError(Exception):
-    """轉換失敗。載入階段把它轉成 E-4002，訊息必須點名是哪個表的哪個欄位。"""
+    """轉換失敗。載入階段把它轉成 E-4002，訊息必須點名是哪個表的哪個欄位。
+
+    刻意直接繼承 `Exception`、不繼承 `ValueError`（見
+    `test_transform_error_base_class_is_exception_not_value_error`）：
+    Task 10 用 `except TransformError` 攔截並轉成 E-4002，若哪天有人
+    改成讓它繼承 `ValueError`，呼叫端任何既有的 `except ValueError` 都會
+    搶先吃掉它，讓它悄悄變成別的錯誤代碼。
+    """
+
+
+def _require_key(transform: dict[str, Any], key: str, *, where: str) -> Any:
+    """直接索引 `transform[key]`，缺鍵時轉成點名 `where` 的 `TransformError`。
+
+    `mapping.schema.json` 的 `transform` 物件把 `kind`／`value_map`／
+    `default`／`value`／`ref_table`／`ref_column` 六個鍵全部列進
+    `required`（值可以是 `null`，但鍵本身必須在）——schema-valid 的
+    `mapping.json` 理論上不會缺鍵。但 `apply_transform` 收到的只是一份
+    `dict[str, Any]`，不保證呼叫端一定先過 schema 驗證；缺鍵在 Python
+    裡就是裸 `KeyError`。
+
+    直接索引（而不是 `.get()` 悄悄回傳 `None`）才符合 Task 7 Mi5 定下的
+    規矩：缺鍵是結構性錯誤，必須大聲失敗，不能被吸收成合法的「這個欄位
+    剛好沒填」。但裸 `KeyError` 不點名是哪個表的哪個欄位、也不是
+    `TransformError`，違反這個模組唯一的錯誤契約——這個小函式把「直接
+    索引」與「錯誤必須是點名 `where` 的 `TransformError`」兩件事同時
+    做到，讓 `kind`／`ref_table`／`value_map`／`default`／`value` 五處
+    存取共用同一套行為。
+    """
+    try:
+        return transform[key]
+    except KeyError:
+        raise TransformError(f"{where}：transform 缺少必要的鍵 {key!r}") from None
 
 
 def _bool_to_import_str(value: bool) -> str:
@@ -45,16 +76,17 @@ def _value_to_import_str(value: Any) -> str:
     落進最後的 `str(value)` 分支結果其實一樣（`str(True) == "True"`），
     但獨立分支讓「布林值要轉成哪種字串」這個決定有一個明確、可單獨修改
     的落點，不必依賴「剛好與 `str()` 的預設行為一致」這個巧合。
+
+    刻意**不對字串值做 `.strip()`**：Informix 的 `CHAR(n)` 是空白補齊的
+    （`CHAR(10)` 存 `'C001'`，讀回來是 `'C001      '`），要不要去掉補齊
+    空白是 `SourceReader` 那一層的責任，不該在這裡悄悄竄改資料——這裡若
+    做了 `.strip()`，會連值本身刻意帶有前後空白的合法資料一起吃掉。
     """
     if value is None:
         return ""
     if isinstance(value, bool):
         return _bool_to_import_str(value)
     return str(value)
-
-
-def _apply_identity(value: Any) -> str:
-    return _value_to_import_str(value)
 
 
 def _apply_value_map(transform: dict[str, Any], value: Any, *, where: str) -> str:
@@ -67,12 +99,34 @@ def _apply_value_map(transform: dict[str, Any], value: Any, *, where: str) -> st
     的旗標欄位是 `int` 的 `0`/`1`），字串化後統一用字串鍵查，避免因為原值
     型別的差異（`1` 對 `"1"`）而在明明語意相同的值上得到「查不到」的
     結果。
+
+    `value_map` 本身為 `None` 或不是 `dict`：這是結構壞掉的 transform
+    （`mapping.schema.json` 允許 `kind == "value_map"` 時 `value_map` 為
+    `null`，那語意上等於「這條規則沒有真的帶對照表」，不是合法的空表）
+    ——必須大聲失敗，不能被 `or {}` 這種寫法悄悄吸收成「這張對照表恰好
+    是空的」。空表是合法輸入（見 `test_value_map_empty_dict_falls_back_
+    to_default`），必須用真正的 `{}` 表達，兩者不能混為一談。
     """
-    value_map: dict[str, Any] = transform.get("value_map") or {}
+    value_map = _require_key(transform, "value_map", where=where)
+    if value_map is None:
+        raise TransformError(
+            f"{where}：kind 是 value_map 但 value_map 是 None，無法查表"
+            "（若規則本意是空對照表，請填 {} 而不是 null）"
+        )
+    if not isinstance(value_map, dict):
+        raise TransformError(f"{where}：value_map 必須是物件，實際是 {value_map!r}")
     key = _value_to_import_str(value)
     if key in value_map:
+        # `value_map[key]` 本身是 `None`：這是「查得到、對到清空」（見
+        # `test_value_map_mapped_value_is_none`），不是「查不到」。對
+        # Boolean 目標欄位而言，空字串與 `"False"` 在 Odoo 的
+        # `_str_to_boolean` 裡都落在 falses 集合，兩者等價；但目標欄位
+        # 若不是 Boolean，「`null` = 清空這一格」與「`null` = 布林假」的
+        # 差異就會浮現（前者是空字串、後者理論上該有個明確的假值字面
+        # 量）。這裡統一回傳空字串，把「填 null 代表清空」這個決定留給
+        # 規則作者在 `value_map` 裡承擔。
         return _value_to_import_str(value_map[key])
-    default = transform.get("default")
+    default = _require_key(transform, "default", where=where)
     # 🔴 必須用 `is None` 而非 `not default`：`default=False` 是完全合法的
     # 規則（「認不得的狀態一律視為停用」），`not False` 會誤判成「沒有
     # default」而錯誤地拋出 TransformError。
@@ -83,11 +137,25 @@ def _apply_value_map(transform: dict[str, Any], value: Any, *, where: str) -> st
     return _value_to_import_str(default)
 
 
-def _apply_constant(transform: dict[str, Any]) -> str:
-    return _value_to_import_str(transform.get("value"))
+def _apply_constant(transform: dict[str, Any], *, where: str) -> str:
+    """回傳固定值，忽略原值。
+
+    🔴 控制者裁決：`kind == "constant"` 而 `value is None` 時**拋
+    `TransformError`，不回傳空字串**。理由：規則作者若真的想寫一個固定
+    的空字串常數，應該明確填 `value: ""`；`value: null` 配上
+    `kind: constant` 代表這條規則的 `value` 根本沒被填過，是結構壞掉，
+    與「`reference` 沒有 `ref_table`」同一類問題——不該讓 `.get()` 幫忙
+    決定成「大家都當作空字串」，那等於這個決定沒有人真正做過。
+    """
+    value = _require_key(transform, "value", where=where)
+    if value is None:
+        raise TransformError(
+            f'{where}：kind 是 constant 但 value 是 None，若要寫入空字串請明確設定 value 為 ""'
+        )
+    return _value_to_import_str(value)
 
 
-def _apply_reference(transform: dict[str, Any], value: Any, *, source_id: str) -> str:
+def _apply_reference(transform: dict[str, Any], value: Any, *, source_id: str, where: str) -> str:
     """把原值解析成 `ref_table` 那張來源表的 external_id。
 
     原值為 `None`：可空外鍵，來源就是 NULL，不是錯誤，是「這筆沒有
@@ -98,10 +166,35 @@ def _apply_reference(transform: dict[str, Any], value: Any, *, source_id: str) -
 
     這裡必須在呼叫 `build_external_id`／`encode_pk_value` **之前**就攔下
     `None`——那兩個函式蓄意拒絕 `None`（`ValueError`），`None` 不該流進去。
+
+    `ref_table` 缺席／為 `None`／為空字串：都是結構壞掉的 transform，統一
+    拋 `TransformError`。`mapping.schema.json` 把 `ref_table` 標成
+    `["string", "null"]`、且不做跨欄位的條件式必填（留給 rules_loader／
+    plan_load 在載入時檢查），所以 `{"kind": "reference", "ref_table":
+    null}` 是一份 schema-valid 的 `mapping.json` 形狀；若不在這裡擋，
+    `transform["ref_table"]` 缺席會是裸 `KeyError`，`ref_table=None` 會讓
+    `encode_pk_value` 炸出不點名 `where` 的 `ValueError`，`ref_table=""`
+    則會靜默組出 `migrai.<source_id>..<pk>` 這種看似合法、實則語意不明
+    的 external_id。
+
+    ⚠️ 這是縱深防禦的第二道，不是唯一一道：`plan_load`
+    （`planner.py:290-294`）已經在建構 `ColumnPlan` 之前，對每一筆
+    `reference` transform 檢查過 `ref_table` 是否為 `None`／是否落在
+    `mapping["models"]` 宣告的表清單裡，不合格會拋 `UnsupportedReference`
+    擋在更早的地方。所以 Task 10 從 `plan_load` 拿到的
+    `ColumnPlan.transform` 理論上不會踩到這裡的檢查——但 `apply_transform`
+    本身的契約（`transform` 是任意 `dict[str, Any]`）並不保證呼叫端一定
+    先過 `plan_load`，這一層仍然要為「結構壞掉的輸入」負責，不能只靠
+    上游守住。
     """
     if value is None:
         return ""
-    return build_external_id(source_id, transform["ref_table"], [value])
+    ref_table = _require_key(transform, "ref_table", where=where)
+    if not ref_table:
+        raise TransformError(
+            f"{where}：reference 的 ref_table 是 {ref_table!r}，無法組出 external_id"
+        )
+    return build_external_id(source_id, ref_table, [value])
 
 
 def apply_transform(
@@ -119,15 +212,18 @@ def apply_transform(
     （包括巢狀的 `value_map`），因為呼叫端與其他表的 `ColumnPlan` 仍可能
     共享同一份巢狀物件。
     """
-    kind = transform["kind"]
+    kind = _require_key(transform, "kind", where=where)
     if kind == "identity":
-        return _apply_identity(value)
+        # 原本有一個 `_apply_identity` 轉包函式，只是 `_value_to_import_str`
+        # 的一行轉呼叫、沒有自己的實質內容（其他三個 `_apply_*` 都有各自
+        # 的規則要處理），已拿掉，這裡直接呼叫更誠實。
+        return _value_to_import_str(value)
     if kind == "value_map":
         return _apply_value_map(transform, value, where=where)
     if kind == "constant":
-        return _apply_constant(transform)
+        return _apply_constant(transform, where=where)
     if kind == "reference":
-        return _apply_reference(transform, value, source_id=source_id)
+        return _apply_reference(transform, value, source_id=source_id, where=where)
     # 四種 kind 都在上面窮盡列舉；`TransformKind` 之外的值代表 mapping.json
     # 本身壞掉了（可能是手動編輯出的錯字），不該落進某種「不認得就原樣
     # 回傳」的預設分支悄悄產生一筆看似合法、實則語意不明的資料。
