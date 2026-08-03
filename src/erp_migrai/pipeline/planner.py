@@ -33,6 +33,21 @@ from erp_migrai.pipeline.source import SourceReader
 # 因為分隔字元的位置不同而組出同一個字串（見模組 docstring）。
 _UNRESERVED_BYTES = frozenset(ord(c) for c in string.ascii_letters + string.digits + "_")
 
+# 多個 PK 值之間的分隔字元。抽成常數而不是在 build_external_id 裡寫死
+# 字面值 "-"，是為了讓「分隔字元必須不在 _UNRESERVED_BYTES 裡」這條
+# 不變式能被獨立測試釘住——見下面的 assert 與
+# test_separator_is_not_in_the_unreserved_byte_set。
+_SEPARATOR = "-"
+assert ord(_SEPARATOR) not in _UNRESERVED_BYTES, (
+    "分隔字元必須不在 unreserved 集合裡，否則會被誤認為值本身的一部分"
+)
+# `%` 是 encode_pk_value 逐位元組跳脫序列自己的前導字元（`%XX`）。分隔字元
+# 若也是 `%`，組出來的字串會沒辦法唯一還原：無法分辨一個 `%` 是「這裡是
+# 分隔字元」還是「這裡是某個位元組被跳脫成 %XX 的開頭」。這條不變式跟
+# 「不在 unreserved 集合裡」是兩件事——`%` 本身也不在 unreserved 集合裡
+# （見 `_UNRESERVED_BYTES` 的定義），上面那條 assert 擋不住這個。
+assert _SEPARATOR != "%", "分隔字元不能是 %，那是跳脫序列自己的前導字元"
+
 
 def encode_pk_value(value: Any) -> str:
     """把單一值編成 external_id 安全的字串（設計 spec §3.3）。
@@ -49,7 +64,16 @@ def encode_pk_value(value: Any) -> str:
     - 這個函式只負責「單一值」怎麼編碼；分隔字元（`build_external_id`
       裡的 `-`／`.`）留給呼叫端決定要不要跳脫、跳脫哪些字元——
       這裡蓄意保持與「呼叫端要組什麼形狀的字串」無關。
+
+    `None` 不是合法的 PK 值：NULL 外鍵在真實 T100 很常見（客戶未指定、
+    上層單號留空），若把 `None` 編碼成字面上的字串 `"None"`，一筆
+    「PK 是 NULL」與另一筆「PK 剛好是字串 'None'」的來源資料會被悄悄
+    組成同一個 external_id——這正是「絕不悄悄產生錯的輸出」要擋的形狀。
+    這裡直接拒絕，NULL 外鍵由呼叫端（Task 10）在餵值之前判斷並跳過該格，
+    不是這個函式該吸收的責任。
     """
+    if value is None:
+        raise ValueError("encode_pk_value 不接受 None：NULL 外鍵應由呼叫端在餵值之前判斷並跳過該格")
     return "".join(
         chr(byte) if byte in _UNRESERVED_BYTES else f"%{byte:02X}"
         for byte in str(value).encode("utf-8")
@@ -60,28 +84,57 @@ def build_external_id(source_id: str, table: str, pk_values: Sequence[Any]) -> s
     """組出 `migrai.<source_id>.<table>.<編碼後PK>`。
 
     `source_id`（呼叫端傳入、代表是哪一個來源系統）與 `table`（來自 DDL）
-    跟 PK 值一樣過 `encode_pk_value` 同一套編碼，理由完全相同：兩者都不
-    保證只含 `[A-Za-z0-9_]`，若不編碼，`.` 在 `source_id`／`table` 裡的
-    位置差異可以組出完全相同的字串——
+    跟 PK 值一樣過 `encode_pk_value` 同一套編碼，理由與 PK 值的編碼同源：
+    三段都不保證只含 `[A-Za-z0-9_]`，若不編碼，分隔字元（`.`）在其中一段
+    裡的位置差異可以組出完全相同的字串——
 
         (source_id="a.b", table="c")   → 不編碼會變成 "migrai.a.b.c.X"
         (source_id="a",   table="b.c") → 不編碼也會變成 "migrai.a.b.c.X"
+
+    嚴格來說，只要 PK 值本身已編碼（`enc(pk)` 保證不含 `.`），
+    `source_id`／`table` 兩段之中**任一個**有編碼就足以杜絕碰撞：
+    字串可以從右邊唯一地切分出 `enc(pk)`、再切出 `enc(table)`
+    （兩者都不含 `.`），剩下的就是 `source_id` 的編碼結果，不會有第二種
+    切法讓兩筆不同輸入湊出同一個字串。**兩段都編碼是雙保險**（保留、
+    對稱、不必記住「兩個裡面選哪一個可以不編碼」），但推不出「兩段都
+    必須編碼」——上一版報告寫的推理只對「兩者都不編碼」這個反例成立，
+    這裡把理由更正。
 
     對真實輸入（`case03`、`cust_mast` 這類只含 `[A-Za-z0-9_]` 的名字）
     這一步是零成本：編碼後原樣不變，`build_external_id("case03",
     "cust_mast", ["C001"]) == "migrai.case03.cust_mast.C001"` 依然成立。
 
-    多個 PK 值（複合主鍵）之間用 `-` 連接——同樣的道理，值內的 `-` 已經
-    在 `encode_pk_value` 那一步被編碼成 `%2D`，這裡的 `-` 才是安全的、
-    純粹當分隔字元用的字面值。
+    多個 PK 值（複合主鍵）之間用 `_SEPARATOR` 連接——同樣的道理，值內的
+    分隔字元已經在 `encode_pk_value` 那一步被編碼掉，這裡的 `_SEPARATOR`
+    才是安全的、純粹當分隔字元用的字面值。
+
+    `pk_values` 不可以是空序列：沒有任何 PK 值就組不出可以辨識「這是哪
+    一筆記錄」的 external_id（退化成結尾留一個空字串區段，所有列都會撞
+    成同一個字串）。呼叫端該在更早的地方（`plan_load` 對「表沒有宣告
+    主鍵」的檢查）就大聲拒絕，不該讓這裡安靜地生出一個沒有意義的值。
     """
-    encoded_pk = "-".join(encode_pk_value(value) for value in pk_values)
+    if not pk_values:
+        raise ValueError(
+            "build_external_id 不接受空的 pk_values：沒有 PK 值組不出可辨識的 external_id"
+        )
+    encoded_pk = _SEPARATOR.join(encode_pk_value(value) for value in pk_values)
     return f"migrai.{encode_pk_value(source_id)}.{encode_pk_value(table)}.{encoded_pk}"
 
 
 @dataclass(frozen=True)
 class ColumnPlan:
-    """一個來源欄位要怎麼寫進 Odoo。"""
+    """一個來源欄位要怎麼寫進 Odoo。
+
+    `frozen=True` 只鎖住這個 dataclass 自己的欄位不能重新賦值
+    （`plan.transform = ...` 會拋 `FrozenInstanceError`），鎖不住
+    `transform` 這個 dict 欄位本身的內容——`dict` 是可變物件，
+    `plan.transform["kind"] = "x"` 這種原地修改依然合法，也因此
+    `ColumnPlan` 儘管標了 `frozen=True` 仍然是不可雜湊的
+    （`hash(ColumnPlan(...))` 會拋 `TypeError`）。`plan_load` 建構時會對
+    `transform` 做一次淺拷貝（`dict(field_mapping["transform"])`），切斷
+    與呼叫端傳入的 `mapping` 共享同一個 dict 物件，但拷貝之後的這份
+    `transform` 本身仍然不是不可變的——下游（Task 8）不得原地修改它。
+    """
 
     source_column: str
     # reference 時是 `<field>/id`（Odoo 匯入格式，表示這一格是 external
@@ -108,7 +161,16 @@ class CyclicReference(Exception):
 
 
 class UnsupportedReference(Exception):
-    """被參照表是複合 PK，或沒有對應到任何 Odoo 模型（MVP 未支援）。
+    """來源表或 reference 宣告本身有問題，MVP 未支援，包括：
+
+    - `mapping["mappings"]` 的 `source.table` 沒有出現在 `mapping["models"]`
+      裡（I2：不知道要把這個欄位寫進哪個 Odoo 模型）。
+    - `ref_table` 沒有出現在 `mapping["models"]` 裡（I2：無法解析外鍵）。
+    - 計畫裡的表（不論是否被參照）沒有宣告主鍵（C2：組不出可辨識的
+      external_id）。
+    - 被參照的表是複合主鍵（C1：用部分鍵湊合會安靜地指到錯誤的記錄）。
+    - reference 宣告的 `ref_column` 不是被參照表實際的主鍵欄位（C3：
+      餵給 `build_external_id` 的值根本不是 PK 值）。
 
     載入階段把它轉成 E-4001。
     """
@@ -120,8 +182,15 @@ def _topological_order(edges: dict[str, set[str]]) -> list[str]:
     確定性的順序。
 
     `edges[table]` 是 `table` 依賴的（必須排在它之前的）表集合。若還有
-    節點剩下、但沒有任何一個節點的剩餘依賴是空的，代表剩下的節點全部
-    互相牽扯成環，直接點名這些表、丟出 `CyclicReference`。
+    節點剩下、但沒有任何一個節點的剩餘依賴是空的，代表這些節點的依賴
+    牽扯到至少一個環——但**不代表每一個被點名的表本身都在環上**：
+    一張表只要依賴著環上的某張表（即使它自己不在環上），它的剩餘依賴
+    也永遠清不空，會被一起列出來（例如 `z_tbl → a_tbl`，`a_tbl` 在
+    `a→b→c→a` 的環上、`z_tbl` 不在，但兩者都會出現在錯誤訊息裡）。
+    訊息措辭因此只承諾「這些表因為 reference 相依而無法排序，其中至少
+    有一個環」，不承諾「以下每一張表都在環上」——MVP 不做強連通分量分析
+    來精確標出環的邊界，那是投機的額外複雜度，這裡的錯誤訊息已足以讓
+    人回頭去查 `mapping.json` 的 reference 宣告。
     """
     remaining = {table: set(deps) for table, deps in edges.items()}
     order: list[str] = []
@@ -130,7 +199,7 @@ def _topological_order(edges: dict[str, set[str]]) -> list[str]:
         if not ready:
             cycle = sorted(remaining)
             raise CyclicReference(
-                "來源表之間的 reference 成環，無法決定載入順序：" + "、".join(cycle)
+                "以下的表因為 reference 相依而無法排序（其中至少有一個環）：" + "、".join(cycle)
             )
         for table in ready:
             order.append(table)
@@ -160,6 +229,11 @@ def plan_load(
     （`ref_table` 必須先被寫進 Odoo）。同層之間依表名字典序排序，確保
     同樣的輸入永遠得到同樣的順序。
 
+    `mapping["models"]` 裡 `source_table` 重複時，後面出現的會靜默覆蓋
+    前面的（`dict` comprehension 的一般行為）；schema 沒有對這件事做
+    uniqueness 約束，這裡假設呼叫端（`migrai map`）產生的 `mapping.json`
+    不會有重複，不在這個函式裡另外檢查。
+
     每張表底下的 `ColumnPlan` 依來源欄位名字典序排序，同樣是為了
     確定性——`mapping["mappings"]` 這份 dict 的原始順序不是這裡承諾的
     契約。
@@ -168,22 +242,45 @@ def plan_load(
     出現在 `mapping.json` 或 `inventory.json` 裡——它是 Task 10 的 CLI
     呼叫端才知道的「這次載入是哪一個來源系統」。
 
-    兩種被參照表的問題會在拓撲排序**之前**就攔下來（用不到排序結果）：
+    以下問題會在拓撲排序**之前**就攔下來（用不到排序結果），全部丟
+    `UnsupportedReference`：
 
+    - `mapping["mappings"]` 裡的 `source.table` 不在 `mapping["models"]`
+      裡：不知道要把這個欄位寫進哪個 Odoo 模型。
     - `ref_table` 不在 `mapping["models"]` 裡：沒有對應到任何 Odoo
-      模型，無法解析外鍵 → `UnsupportedReference`。
-    - `ref_table` 的 PK（由 `reader.primary_key()` 查得）長度 > 1：
-      複合主鍵，MVP 未支援用複合鍵組 external_id（用部分鍵湊合會安靜地
-      指到錯誤的記錄）→ `UnsupportedReference`。
+      模型，無法解析外鍵。
+    - **計畫裡的每一張表**（不論是否被參照）的 PK（由
+      `reader.primary_key()` 查得）長度是 0：沒有宣告主鍵，組不出可
+      辨識「這是哪一筆記錄」的 external_id。注意這條規則是「至少 1
+      個」，不是「恰好 1 個」——複合主鍵完全合法（`build_external_id`
+      本來就吃多個 PK 值），例如 `ord_deta` 的主鍵是
+      `(ord_no, ord_seq)`。
+    - **被參照的表**（出現在某個 `ref_table` 位置）的 PK 長度 > 1：
+      複合主鍵，MVP 未支援用複合鍵組外鍵的 external_id（用部分鍵湊合
+      會安靜地指到錯誤的記錄）——參照方的那一格只帶得動一個欄位的值，
+      湊不出複合鍵。
+    - **被參照的表**宣告的 `ref_column` 不等於該表實際的（單欄）主鍵：
+      `ref_column` 來自 `mapping.json`，可能被人手動改錯；若不比對，
+      Task 10 會拿一個根本不是 PK 的欄位值去組 external_id，指到一筆
+      不存在或錯誤的記錄。
     """
     table_to_model = {model["source_table"]: model["target_model"] for model in mapping["models"]}
-    field_mappings: list[dict[str, Any]] = mapping.get("mappings", [])
+    field_mappings: list[dict[str, Any]] = mapping["mappings"]
 
     columns_by_table: dict[str, list[dict[str, Any]]] = {table: [] for table in table_to_model}
     edges: dict[str, set[str]] = {table: set() for table in table_to_model}
+    # (來源表, 來源欄位, 被參照表, 宣告的 ref_column) ——蒐集起來，
+    # 讓下面對「被參照表」的驗證只需要對每個 distinct 的被參照表做一次
+    # （見 Mi7：避免同一張被參照表因為被 N 條 reference 參照而被查詢
+    # N 次 PK）。
+    reference_occurrences: list[tuple[str, str, str, str]] = []
 
     for field_mapping in field_mappings:
         table = field_mapping["source"]["table"]
+        if table not in columns_by_table:
+            raise UnsupportedReference(
+                f"{table!r} 不在 mapping['models'] 裡，不知道要把這個欄位寫進哪個 Odoo 模型"
+            )
         columns_by_table[table].append(field_mapping)
 
         transform = field_mapping["transform"]
@@ -195,11 +292,49 @@ def plan_load(
             raise UnsupportedReference(
                 f"{table!r} 參照的來源表 {ref_table!r} 沒有對應到任何 Odoo 模型，無法解析外鍵"
             )
-        if len(reader.primary_key(ref_table)) > 1:
+        edges[table].add(ref_table)
+        reference_occurrences.append(
+            (table, field_mapping["source"]["column"], ref_table, transform["ref_column"])
+        )
+
+    pk_cache: dict[str, list[str]] = {}
+
+    def _cached_primary_key(table: str) -> list[str]:
+        if table not in pk_cache:
+            pk_cache[table] = reader.primary_key(table)
+        return pk_cache[table]
+
+    # 計畫裡的每一張表都要能組出可辨識的 external_id（C2）：規則是
+    # 「至少 1 個 PK 欄位」，不是「恰好 1 個」——複合主鍵在這裡完全合法。
+    # 依表名排序只是讓多張表同時違規時，錯誤訊息點名的順序是穩定的。
+    for table in sorted(table_to_model):
+        if not _cached_primary_key(table):
+            raise UnsupportedReference(f"{table!r} 沒有宣告主鍵，無法組出可辨識的 external_id")
+
+    # 被參照的表另外多兩條限制：只能是單欄主鍵（C1），且 reference 宣告
+    # 的 ref_column 必須就是那個主鍵欄位（C3）。上面那一輪已經確保每張
+    # 表（因此也包含每張被參照表）的 PK 長度不是 0，這裡分成兩個分支仍然
+    # 各自給出對應的訊息，不依賴上面那一輪一定先跑過——避免日後有人調整
+    # 檢查順序時，「沒有宣告主鍵」的表被套上「是複合主鍵」這種錯誤診斷。
+    referenced_tables = sorted({ref_table for _, _, ref_table, _ in reference_occurrences})
+    for ref_table in referenced_tables:
+        ref_pk = _cached_primary_key(ref_table)
+        if not ref_pk:
+            raise UnsupportedReference(
+                f"被參照的來源表 {ref_table!r} 沒有宣告主鍵，無法組出可辨識的 external_id"
+            )
+        if len(ref_pk) > 1:
             raise UnsupportedReference(
                 f"被參照的來源表 {ref_table!r} 是複合主鍵，MVP 未支援這種外鍵形狀"
             )
-        edges[table].add(ref_table)
+
+    for table, source_column, ref_table, ref_column in reference_occurrences:
+        expected = pk_cache[ref_table][0]
+        if ref_column != expected:
+            raise UnsupportedReference(
+                f"{table!r}.{source_column!r} 參照 {ref_table!r}.{ref_column!r}，"
+                f"但 {ref_table!r} 的主鍵是 {expected!r}——非主鍵外鍵 MVP 未支援"
+            )
 
     order = _topological_order(edges)
 
@@ -209,7 +344,10 @@ def plan_load(
             ColumnPlan(
                 source_column=field_mapping["source"]["column"],
                 odoo_field=_odoo_field(field_mapping),
-                transform=field_mapping["transform"],
+                # 淺拷貝：切斷與呼叫端傳入的 mapping 共享同一個 dict
+                # 物件，避免下游原地修改 transform 時回頭改到呼叫端的
+                # mapping（見 ColumnPlan docstring）。
+                transform=dict(field_mapping["transform"]),
             )
             for field_mapping in sorted(
                 columns_by_table[table], key=lambda field_mapping: field_mapping["source"]["column"]
