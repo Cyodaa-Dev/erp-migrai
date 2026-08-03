@@ -14,6 +14,12 @@
 只是換了一段字串。`test_build_external_id_encodes_source_id_and_table_
 to_close_the_same_collision_shape` 專門守這個缺口。
 
+⚠️ 上面那段推理只證明了「兩段都不編碼會撞」，**推不出「兩段都必須編碼」**：
+只要 PK 值本身已編碼（`enc(pk)` 不含 `.`），`source_id`／`table` 之中
+**任一個**有編碼就足以杜絕碰撞——字串可以從右邊唯一地切分。兩段都編碼是
+**雙保險**（對稱、不必記住哪一個可以不編碼），是正確的做法，但理由要寫對，
+否則下一個人會依錯誤推理做決策。完整論證見 `build_external_id` 的 docstring。
+
 ## 拓撲排序 fixture 的設計
 
 `_mapping_with_case03_shape()` 的 `models` 刻意排成
@@ -279,6 +285,24 @@ def test_encode_pk_value_escapes_percent_itself():
 
 def test_build_external_id_shape():
     assert build_external_id("case03", "cust_mast", ["C001"]) == "migrai.case03.cust_mast.C001"
+
+
+def test_build_external_id_composite_key_shape_is_a_backward_compatibility_contract():
+    """複合主鍵的 external_id 字面形狀，釘住的是**回溯相容性**，不是內部細節。
+
+    external_id 存在的理由，就是讓同一份來源資料再匯入一次時 Odoo 認得出
+    「這是上次那筆」而更新、不是重複建立。一旦 Task 10／11 把這些字串寫進
+    Odoo 的 `ir.model.data` 與 `migration_log.jsonl`，字面形式就變成對外
+    契約——改掉 `_SEPARATOR`（例如從 `-` 換成 `~`）不會讓任何行為測試變紅
+    （那是合法的等價改寫），卻會讓下一次匯入把整批舊記錄當成新記錄再建一份。
+
+    所以這條刻意寫死字面值，與
+    `test_separator_is_not_in_the_unreserved_byte_set` 分工：那條守「分隔
+    字元的選擇必須安全」，這條守「選定之後不可以再改」。
+    """
+    assert build_external_id("case03", "ord_deta", ["O0001", 1]) == (
+        "migrai.case03.ord_deta.O0001-1"
+    )
 
 
 def test_build_external_id_encodes_source_id_and_table_to_close_the_same_collision_shape():
