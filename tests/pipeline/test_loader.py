@@ -50,13 +50,17 @@ from erp_migrai.pipeline.loader import (
     _action_for,
     _batch_outcome,
     _decide_row,
+    _emit_batch_retry,
+    _emit_load_failed,
     _entries_from_ids,
+    _failed_entries,
     _first_error_message,
     _iter_chunks,
     _merge_decisions,
     _MigrationLogWriter,
     _missing_source_columns,
     _name_without_module_prefix,
+    _on_rate_limit,
     _PendingRow,
     _row_value,
     _validate_and_dump,
@@ -65,7 +69,7 @@ from erp_migrai.pipeline.loader import (
 )
 from erp_migrai.pipeline.models import LogEntry
 from erp_migrai.pipeline.odoo_client import OdooError, RateLimited
-from erp_migrai.pipeline.planner import CyclicReference, TablePlan, plan_load
+from erp_migrai.pipeline.planner import ColumnPlan, CyclicReference, TablePlan, plan_load
 from erp_migrai.pipeline.source import SourceError
 
 # --------------------------------------------------------------------------
@@ -1300,3 +1304,118 @@ def test_run_load_unsupported_reference_aborts_with_e4001_and_empty_log(tmp_path
     assert result.entries == ()
     assert (out / "migration_log.jsonl").read_text(encoding="utf-8") == ""
     assert any(e["error_code"] == "E-4001" for e in log.events)
+
+
+# ---------------------------------------------------------------------------
+# 複驗輪次 2：三個發碼點與 _failed_entries 原本零守衛
+#
+# E-4003／E-4004／E-4005 是對下游（Task 11 verify、商業版 log consumer）
+# 承諾的錯誤碼契約。上一輪的 mutation 顯示這三個發碼點互換錯誤碼、甚至
+# 一則事件都不發，都沒有任何測試會紅——而它們早就是只吃 EventLog、不吃
+# client 的模組層函式，零 Odoo 就能斷言。誠實界線是用來擋 fake Odoo 的，
+# 不是用來當作不寫測試的理由。
+# ---------------------------------------------------------------------------
+
+
+def test_emit_load_failed_emits_e4003_naming_table_and_external_id(tmp_path: Path):
+    log = EventLog(path=tmp_path / "events.jsonl", run_id="r1")
+    _emit_load_failed(
+        log, table="cust_mast", external_id="migrai.c3.cust_mast.C001", message="boom"
+    )
+
+    (event,) = log.events
+    assert event["error_code"] == "E-4003"
+    assert "cust_mast" in event["message"]
+    assert "boom" in event["message"]
+    assert event["details"]["external_id"] == "migrai.c3.cust_mast.C001"
+
+
+def test_emit_batch_retry_emits_e4004_warn_not_e4005(tmp_path: Path):
+    """整批失敗（E-4004）與限流（E-4005）的處置方式完全不同：前者降級逐筆、
+    後者退避等待。兩者互換會讓使用者（與 Task 11）讀到相反的診斷。"""
+    log = EventLog(path=tmp_path / "events.jsonl", run_id="r1")
+    _emit_batch_retry(log, table="ord_deta", reason="Odoo 拒絕寫入", batch_size=42)
+
+    (event,) = log.events
+    assert event["error_code"] == "E-4004"
+    assert "ord_deta" in event["message"]
+    assert "42" in event["message"]
+    assert event["details"]["batch_size"] == 42
+
+
+def test_on_rate_limit_handler_emits_e4005_per_retry(tmp_path: Path):
+    """`retry_with_backoff` 每次退避前都會呼叫這個 handler——它必須真的
+    發事件（mutation：handler 直接 return，一則都不發，原本全綠）。"""
+    log = EventLog(path=tmp_path / "events.jsonl", run_id="r1")
+    handler = _on_rate_limit(log, table="prod_mast", mode="批次載入")
+    handler(1, 1.0)
+    handler(2, 2.0)
+
+    assert [e["error_code"] for e in log.events] == ["E-4005", "E-4005"]
+    assert "prod_mast" in log.events[0]["message"]
+    assert "批次載入" in log.events[0]["message"]
+    # 第幾次重試與等待秒數都要進訊息，否則使用者看不出退避有沒有在動
+    assert "2" in log.events[1]["message"]
+
+
+def test_failed_entries_marks_every_pending_row_failed_with_e4003():
+    """`action` 必須是 `failed` 而不是 `skipped`——`skipped` 的語意是
+    「父記錄失敗所以不寫」，這裡是「真的送出去了但 Odoo 拒絕」。兩者混淆
+    會讓 migration_log 說謊（mutation：改成 `skipped` 原本全綠）。"""
+    table_plan = TablePlan(source_table="cust_mast", target_model="res.partner", columns=())
+    pending = [
+        _PendingRow(
+            external_id="migrai.c3.cust_mast.C001",
+            name_without_prefix="c3.cust_mast.C001",
+            source_pk=("C001",),
+            values=[],
+        ),
+        _PendingRow(
+            external_id="migrai.c3.cust_mast.C002",
+            name_without_prefix="c3.cust_mast.C002",
+            source_pk=("C002",),
+            values=[],
+        ),
+    ]
+
+    entries = _failed_entries(pending, table_plan=table_plan, run_id="r1", message="Odoo 拒絕寫入")
+
+    assert [e.action for e in entries] == ["failed", "failed"]
+    assert [e.error_code for e in entries] == ["E-4003", "E-4003"]
+    assert [e.external_id for e in entries] == [p.external_id for p in pending]
+    assert all(e.odoo_id is None for e in entries)
+    assert all(e.message == "Odoo 拒絕寫入" for e in entries)
+
+
+def test_missing_source_columns_hints_at_case_mismatch(tmp_path: Path):
+    """T100／Informix → SQLite 的欄位名大小寫漂移是最可能踩到 C1 的場景。
+    沒有這個提示的話，訊息會把人導向「mapping 與 source 不是同一次 scan
+    的產物」而看不出真正原因。"""
+
+    class _Reader:
+        def tables(self) -> list[str]:
+            return ["cust"]
+
+        def primary_key(self, table: str) -> list[str]:
+            return ["Id"]
+
+        def columns(self, table: str) -> list[str]:
+            return ["Id", "Name"]
+
+        def rows(self, table: str):
+            return iter(())
+
+        def count(self, table: str) -> int:
+            return 0
+
+    plan = TablePlan(
+        source_table="cust",
+        target_model="res.partner",
+        columns=(
+            ColumnPlan(source_column="name", odoo_field="name", transform={"kind": "identity"}),
+        ),
+    )
+    (missing,) = _missing_source_columns([plan], _Reader())
+    assert missing.startswith("cust.name")
+    assert "大小寫" in missing
+    assert "'Name'" in missing

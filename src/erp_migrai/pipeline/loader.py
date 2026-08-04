@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -463,6 +463,56 @@ def _on_rate_limit(event_log: EventLog, *, table: str, mode: str) -> Callable[[i
     return _handler
 
 
+def _emit_batch_retry(event_log: EventLog, *, table: str, reason: str, batch_size: int) -> None:
+    """整批失敗、即將降級逐筆時發 E-4004（WARN）。
+
+    與 `_emit_load_failed`／`_on_rate_limit` 一樣是**純本地**的發碼點：
+    只吃 `EventLog`，不吃 client。複驗輪次 2 指出這三個發碼點原本零守衛
+    ——E-4003／E-4004／E-4005 是對下游（Task 11 verify、商業版 log
+    consumer）承諾的錯誤碼契約，發錯碼會讓「限流」與「整批失敗」互換，
+    而兩者的處置方式完全不同。抽成同型的具名函式之後就測得到。
+    """
+    event_log.emit(
+        "load.batch_retry",
+        code=E_4004,
+        message=f"{table}：{reason}，降級為逐筆載入以隔離壞掉的記錄（本批 {batch_size} 筆）",
+        details={"source_table": table, "batch_size": batch_size},
+    )
+
+
+def _failed_entries(
+    pending: Sequence[_PendingRow],
+    *,
+    table_plan: TablePlan,
+    run_id: str,
+    message: str,
+) -> list[LogEntry]:
+    """把一批（或一筆）待寫入的列全部標成 `failed`／E-4003。
+
+    複驗輪次 2 的 Minor：這段「建一串 failed LogEntry」在
+    `_flush_individually` 的兩個 except 分支與 `_flush_batch` 的
+    `OdooAuthError` 分支裡是**逐字重複的複製貼上**，而且
+    `action="failed"` 改成 `"skipped"` 沒有任何測試會紅——正是 I6 剛
+    修掉的形狀又長回來一份。它是純本地邏輯（吃 `pending`／`table_plan`／
+    `run_id`／`message`，不吃 client），與 `_entries_from_ids` 同一類，
+    所以提到模組層共用並配單元測試。
+    """
+    return [
+        LogEntry(
+            run_id=run_id,
+            source_table=table_plan.source_table,
+            source_pk=item.source_pk,
+            external_id=item.external_id,
+            target_model=table_plan.target_model,
+            action="failed",
+            odoo_id=None,
+            error_code="E-4003",
+            message=message,
+        )
+        for item in pending
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 純函式：created／updated 決策與批次結果判讀
 #
@@ -588,18 +638,8 @@ def _flush_individually(
                 external_id=item.external_id,
                 message=message,
             )
-            entries.append(
-                LogEntry(
-                    run_id=run_id,
-                    source_table=table_plan.source_table,
-                    source_pk=item.source_pk,
-                    external_id=item.external_id,
-                    target_model=table_plan.target_model,
-                    action="failed",
-                    odoo_id=None,
-                    error_code="E-4003",
-                    message=message,
-                )
+            entries.extend(
+                _failed_entries([item], table_plan=table_plan, run_id=run_id, message=message)
             )
             continue
 
@@ -615,18 +655,8 @@ def _flush_individually(
                 external_id=item.external_id,
                 message=message,
             )
-            entries.append(
-                LogEntry(
-                    run_id=run_id,
-                    source_table=table_plan.source_table,
-                    source_pk=item.source_pk,
-                    external_id=item.external_id,
-                    target_model=table_plan.target_model,
-                    action="failed",
-                    odoo_id=None,
-                    error_code="E-4003",
-                    message=message,
-                )
+            entries.extend(
+                _failed_entries([item], table_plan=table_plan, run_id=run_id, message=message)
             )
             continue
 
@@ -719,11 +749,11 @@ def _flush_batch(
         return client.execute_kw(table_plan.target_model, "load", [field_names, data_matrix])
 
     def _degrade(reason: str, *, individual_attempts: int = attempts) -> list[LogEntry]:
-        event_log.emit(
-            "load.batch_retry",
-            code=E_4004,
-            message=f"{table_plan.source_table} 整批載入失敗（{reason}），降級逐筆重試以隔離",
-            details={"source_table": table_plan.source_table, "batch_size": len(pending)},
+        _emit_batch_retry(
+            event_log,
+            table=table_plan.source_table,
+            reason=reason,
+            batch_size=len(pending),
         )
         return _flush_individually(
             pending,
@@ -738,24 +768,17 @@ def _flush_batch(
 
     def _batch_failed_entries(message: str) -> list[LogEntry]:
         """整批直接標成失敗，不降級逐筆——目前只有 `OdooAuthError` 會走
-        這條（見下方 `except OdooAuthError` 分支的理由）。"""
+        這條（見下方 `except OdooAuthError` 分支的理由）。
+
+        建 LogEntry 的部分委派給模組層的 `_failed_entries`，與
+        `_flush_individually` 的兩個失敗分支共用同一份邏輯（複驗輪次 2
+        的 Minor：原本是逐字重複的複製貼上，`action` 改成 `"skipped"`
+        沒有任何測試會紅）。
+        """
         _emit_load_failed(
             event_log, table=table_plan.source_table, external_id="(batch)", message=message
         )
-        return [
-            LogEntry(
-                run_id=run_id,
-                source_table=table_plan.source_table,
-                source_pk=item.source_pk,
-                external_id=item.external_id,
-                target_model=table_plan.target_model,
-                action="failed",
-                odoo_id=None,
-                error_code="E-4003",
-                message=message,
-            )
-            for item in pending
-        ]
+        return _failed_entries(pending, table_plan=table_plan, run_id=run_id, message=message)
 
     try:
         result = retry_with_backoff(
@@ -852,10 +875,20 @@ def _missing_source_columns(plans: list[TablePlan], reader: SourceReader) -> lis
     """
     missing: list[str] = []
     for table_plan in plans:
-        available = set(reader.columns(table_plan.source_table))
+        available = list(reader.columns(table_plan.source_table))
+        available_set = set(available)
+        lowered = {name.lower(): name for name in available}
         for col in table_plan.columns:
-            if col.source_column not in available:
-                missing.append(f"{table_plan.source_table}.{col.source_column}")
+            if col.source_column in available_set:
+                continue
+            # 大小寫提示：T100／Informix → SQLite 的欄位名大小寫漂移，正是
+            # 最可能踩到這條的場景（DDL 寫 `Name`、mapping 寫 `name`）。
+            # 沒有這個提示的話，訊息會把人導向「mapping 與 source 不是同一次
+            # scan 的產物」而看不出真正原因。照抄 `source.py::_check_table`
+            # 對「表名」大小寫不符的既有寫法，只是換成欄位名。
+            actual = lowered.get(col.source_column.lower())
+            hint = f"（大小寫不符：來源資料庫裡是 {actual!r}）" if actual else ""
+            missing.append(f"{table_plan.source_table}.{col.source_column}{hint}")
     return missing
 
 
