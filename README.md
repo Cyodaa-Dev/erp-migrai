@@ -79,7 +79,7 @@ mapping. Want to try your own `.4gl` sources instead?
 | Capability | Available today ✅ | Planned 🗺️ | Commercial 💼 |
 |---|---|---|---|
 | Reverse engineering (`.4gl` inventory) | ✅ 4 program-unit kinds | More Genero syntax | Customer rule library |
-| Data mapping → Odoo 17 | ✅ 4 models, 42 fields | More standard models | Industry templates |
+| Data mapping → Odoo 17 | ✅ 5 models, 48 fields | More standard models | Industry templates |
 | ETL load + verify (Odoo 17) | ✅ Synthetic SQLite source | — | Oracle source |
 | Local web UI | — | 🗺️ | 💼 |
 | Migration assessment (module 2) | — | 🗺️ | 💼 |
@@ -173,7 +173,7 @@ $ make demo
 | 能力 | 現在就有 ✅ | 規劃中 🗺️ | 商業版 💼 |
 |---|---|---|---|
 | 逆向工程（`.4gl` 盤點） | ✅ 4 種程式單元型態 | 更多 Genero 語法 | 客戶規則庫 |
-| 資料映射 → Odoo 17 | ✅ 四個模型、42 欄位 | 更多標準模型 | 產業模板 |
+| 資料映射 → Odoo 17 | ✅ 五個模型、48 欄位 | 更多標準模型 | 產業模板 |
 | ETL 載入＋驗證 Odoo 17 | ✅ 合成 SQLite 來源 | — | Oracle 來源 |
 | 本機 Web UI | — | 🗺️ | 💼 |
 | 遷移評估（模組二） | — | 🗺️ | 💼 |

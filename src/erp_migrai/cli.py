@@ -199,7 +199,8 @@ def map_command(
     strict: bool = typer.Option(  # noqa: B008
         False,
         "--strict",
-        help="把 ERROR／CRITICAL 等級的事件也視為失敗（exit 1）；"
+        help="map 階段的致命碼（E-2001）本身就是 ERROR，此旗標目前不影響判定，"
+        "與 verify 保持相同的介面（為未來新增 WARN 等級也判定失敗預留）；"
         "WARN 等級（例如覆蓋率偏低的 E-2002）不受影響，仍視為完成。",
     ),
 ) -> None:
@@ -399,7 +400,8 @@ def load_command(
     strict: bool = typer.Option(  # noqa: B008
         False,
         "--strict",
-        help="把 ERROR／CRITICAL 等級的事件也視為失敗（exit 1）；"
+        help="load 階段的致命碼（E-4001／E-4002／E-4003）本身就是 ERROR，此旗標目前不影響判定，"
+        "與 verify 保持相同的介面（為未來新增 WARN 等級也判定失敗預留）；"
         "E-4004／E-4005（WARN）不受影響，仍視為完成。",
     ),
 ) -> None:

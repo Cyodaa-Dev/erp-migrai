@@ -20,6 +20,7 @@ import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
+from erp_migrai.mapping.catalog import load_catalog
 from erp_migrai.mapping.yamlio import safe_load_strict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -456,6 +457,68 @@ def test_readme_capability_table_program_unit_count_matches_models():
     )
     assert f"{count} 種程式單元型態" in text, (
         f"README 中文能力表格未宣稱 {count} 種程式單元型態（見 ProgramUnit.kind）"
+    )
+
+
+def catalog_model_and_field_count() -> tuple[int, int]:
+    """從內建 `odoo17_catalog.yaml`（透過 `load_catalog`，跟 `map` 階段
+    實際使用的是同一份載入路徑）現算模型數與欄位總數。
+
+    最終整分支審查 Critical C3：`README.md` 的能力表原本寫死「4 models,
+    42 fields」／「四個模型、42 欄位」——那是本分支基準（`1266645`）的
+    數字。Task 1（`c75ac11`）新增 `product.product` 之後，catalog 已經是
+    5 模型 48 欄位，`tests/mapping/test_catalog.py` 的
+    `test_builtin_catalog_loads_and_has_five_models` 早就知道是 5，
+    README 卻沒跟上——這正是「文件宣稱一件跟程式碼對不上的事」。這裡現算
+    而不是照抄審查報告給的數字，往後任何人再加模型／欄位，這條測試會先紅，
+    不必等下一次人工複審才發現 README 又跟程式碼分岔了。
+    """
+    catalog = load_catalog()
+    model_count = len(catalog)
+    field_count = sum(len(model.fields) for model in catalog.values())
+    return model_count, field_count
+
+
+_CJK_DIGITS = {
+    "0": "零",
+    "1": "一",
+    "2": "二",
+    "3": "三",
+    "4": "四",
+    "5": "五",
+    "6": "六",
+    "7": "七",
+    "8": "八",
+    "9": "九",
+}
+
+
+def test_readme_capability_table_model_and_field_count_matches_catalog():
+    """README 能力表宣稱的模型數／欄位數，必須釘在內建 catalog 上。
+
+    最終整分支審查 Critical C3：英文能力表格是阿拉伯數字（`5 models, 48
+    fields`），中文能力表格既有的寫法用中文數字（原本是「四個模型、42
+    欄位」，不是「4 個模型」）——這裡的斷言比照既有格式，不強行改成阿拉伯
+    數字，只在模型數 ≤ 9（中文數字表能直接查表轉換）時才做中文能力表的
+    斷言，模型數更大時寧可讓這條測試明確失敗、提醒人手動處理，也不要
+    生成一個查表查不到的假數字。
+    """
+    model_count, field_count = catalog_model_and_field_count()
+    text = README.read_text(encoding="utf-8")
+
+    assert f"{model_count} models, {field_count} fields" in text, (
+        f"README 英文能力表格未宣稱 {model_count} models, {field_count} fields"
+        "（見 mapping.catalog.load_catalog）"
+    )
+
+    assert model_count <= 9, (
+        f"catalog 已有 {model_count} 個模型，超出中文數字查表範圍，"
+        "請手動更新 test_docs.py 的中文數字斷言與 README"
+    )
+    cjk_model_count = _CJK_DIGITS[str(model_count)]
+    assert f"{cjk_model_count}個模型、{field_count} 欄位" in text, (
+        f"README 中文能力表格未宣稱 {cjk_model_count}個模型、{field_count} 欄位"
+        "（見 mapping.catalog.load_catalog）"
     )
 
 
