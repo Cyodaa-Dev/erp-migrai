@@ -107,6 +107,7 @@ jobs:
               "erp_migrai/mapping/rules/README.md",
               "erp_migrai/mapping/schema/mapping.schema.json",
               "erp_migrai/pipeline/schema/migration_log.schema.json",
+              "erp_migrai/pipeline/schema/verification_report.schema.json",
           ]
           missing = [r for r in required if r not in names]
           assert not missing, f"wheel 缺少：{missing}"

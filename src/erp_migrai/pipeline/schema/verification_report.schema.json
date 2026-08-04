@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cyodaa-Dev/erp-migrai/schema/verification_report-1.0.json",
+  "title": "ERP MIGRAI verification_report",
+  "description": "migrai verify 的產出，比對來源資料庫與 Odoo 裡的資料。刻意不帶時間戳與絕對路徑——報告必須可 diff，時間只住在 events.jsonl（兩者不共用 run_id：驗證階段只讀不寫，本身不產生 migration_log 那種需要跨檔 join 的記錄）。summary 必須是從 checks 數出來的結果，不是另外維護的計數器（原則 3：計劃 2 的 Critical 就是「產出物少一項時分母沒有跟著變」這個形狀）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_id", "synthetic", "checks", "summary"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "本 schema 的版本，目前恆為 \"1.0\"。"
+    },
+    "source_id": {
+      "type": "string",
+      "description": "與 migrai load 使用的 --source-id 相同，用來查 Odoo 裡帶 migrai.<source_id>.<table>. 前綴的 external_id。"
+    },
+    "synthetic": {
+      "type": "boolean",
+      "description": "一路從 inventory.json 的 synthetic 傳下來，標記這是合成語料而非真實客戶資料（D2）。"
+    },
+    "checks": {
+      "type": "array",
+      "description": "每一筆是一個獨立的比對結果，依 kind／source_table 決定要看 count 那組欄位還是 amount 那組欄位。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "source_table",
+          "target_model",
+          "status",
+          "source_count",
+          "target_count",
+          "source_amount",
+          "target_amount"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["row_count", "amount_subtotal"],
+            "description": "row_count：來源表總筆數 vs Odoo 帶對應 external_id 前綴的筆數。amount_subtotal：來源 SUM(qty×price) vs Odoo sale.order.line.price_subtotal（未稅）合計。"
+          },
+          "source_table": {
+            "type": "string"
+          },
+          "target_model": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pass", "fail"]
+          },
+          "source_count": {
+            "type": ["integer", "null"],
+            "description": "row_count 專用；amount_subtotal 這一列恆為 null。"
+          },
+          "target_count": {
+            "type": ["integer", "null"],
+            "description": "row_count 專用；amount_subtotal 這一列恆為 null。"
+          },
+          "source_amount": {
+            "type": ["string", "null"],
+            "description": "amount_subtotal 專用，Decimal 的字串形式（絕不用浮點數表示金額）；row_count 這一列恆為 null。"
+          },
+          "target_amount": {
+            "type": ["string", "null"],
+            "description": "amount_subtotal 專用，Decimal 的字串形式；row_count 這一列恆為 null。"
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "passed", "failed"],
+      "properties": {
+        "total": { "type": "integer" },
+        "passed": { "type": "integer" },
+        "failed": { "type": "integer" }
+      }
+    }
+  }
+}

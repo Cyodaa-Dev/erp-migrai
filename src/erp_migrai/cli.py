@@ -18,12 +18,14 @@ import os
 import sys
 import uuid
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import typer
 
 from erp_migrai import __version__
-from erp_migrai.events import EventLog, Stage
+from erp_migrai.events import E_5001, E_5002, EventLog, Stage
 from erp_migrai.inventory.extractor import ScanFailed, write_inventory
 from erp_migrai.inventory.extractor import scan as run_scan
 from erp_migrai.mapping.catalog import CatalogError
@@ -32,8 +34,21 @@ from erp_migrai.mapping.pipeline import InventoryReadError, InventoryValidationE
 from erp_migrai.mapping.rules_loader import RuleError
 from erp_migrai.mapping.writer import MappingSchemaError, MappingSerializationError
 from erp_migrai.pipeline.loader import LogEntrySchemaError, run_load
-from erp_migrai.pipeline.odoo_client import OdooClient
-from erp_migrai.pipeline.source import SourceError, SqliteSourceReader
+from erp_migrai.pipeline.odoo_client import OdooClient, OdooError
+from erp_migrai.pipeline.report import build_report, render_markdown
+from erp_migrai.pipeline.source import SourceError, SourceReader, SqliteSourceReader
+from erp_migrai.pipeline.verify import (
+    Check,
+    MigrationLogReadError,
+    compare_amount,
+    compare_row_count,
+    count_names_with_prefix,
+    find_amount_subtotal_target,
+    find_row_count_targets,
+    parse_migration_log,
+    sum_source_amount,
+    sum_target_amount,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -45,6 +60,21 @@ EVENTS_FILENAME = "events.jsonl"
 # P3-2：密碼只收環境變數或 --password-stdin，不實作 --password 旗標——
 # 密碼進 argv 會被同機器上任何使用者用 `ps` 看到，也會落進 shell 歷史。
 PASSWORD_ENV_VAR = "MIGRAI_ODOO_PASSWORD"
+
+# `verify` 產出的兩份報告檔名（precedent：EVENTS_FILENAME）。
+VERIFICATION_REPORT_JSON_FILENAME = "verification_report.json"
+VERIFICATION_REPORT_MD_FILENAME = "verification_report.md"
+
+# `build_external_id` 恆用 "migrai" 當 external_id 的 module 段（見
+# planner.build_external_id 的 f-string）；loader.py 也各自定義了同樣字面值
+# 的 `_MODULE` 常數（那份是 private，不建議跨模組 import 底線名稱），這裡
+# 依同樣的既有慣例（同一字面值分散在需要它的模組各自宣告）再宣告一份。
+_MIGRAI_MODULE = "migrai"
+
+# 金額比對的容差：Odoo 預設幣別（TWD／USD）最小單位皆為分，0.01 是貨幣捨入
+# 誤差的合理容差，不是拍腦袋（設計 spec §3.6：「容差為 Odoo 的幣別
+# rounding（0.01）」）。
+VERIFICATION_ROUNDING = Decimal("0.01")
 
 
 def _fresh_event_log(out_dir: Path) -> EventLog:
@@ -423,6 +453,268 @@ def load_command(
     if fatal_event is not None:
         typer.echo(f"  原因：[{fatal_event['error_code']}] {fatal_event['message']}")
     typer.echo(f"  → {result.log_path}")
+    typer.echo(f"  → {event_log.path}")
+
+    if fatal_event is not None:
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# verify：只在這一層碰 client——`verify.py`／`report.py` 是純函式（見兩個
+# 模組的 docstring），這裡的職責僅止於「呼叫 client 拿數字，交給純函式」。
+# ---------------------------------------------------------------------------
+
+
+def _target_names(client: OdooClient, *, target_model: str) -> list[str]:
+    """查一次 `ir.model.data`，回傳這個目標模型底下所有 `migrai.` module
+    的 `name`（已去掉 module 前綴）。
+
+    只做查詢、只回傳原始資料——`count_names_with_prefix` 才是真正的比對
+    邏輯，那個函式住在 `verify.py`。`rows` 形狀不如預期（RPC 層本身沒有
+    任何型別保證）一律回傳空清單，不讓裸 `TypeError`／`KeyError` 逃出去。
+    """
+    rows = client.execute_kw(
+        "ir.model.data",
+        "search_read",
+        [[["module", "=", _MIGRAI_MODULE], ["model", "=", target_model]]],
+        {"fields": ["name"]},
+    )
+    if not isinstance(rows, list):
+        return []
+    return [str(row["name"]) for row in rows if isinstance(row, dict) and "name" in row]
+
+
+def _target_line_amount(
+    client: OdooClient, *, source_id: str, table: str, target_model: str
+) -> Decimal:
+    """查出這個來源表（依 `migrai.<source_id>.<table>.` 前綴辨認）在 Odoo
+    裡對應記錄的 `price_subtotal` 合計。
+
+    分兩步：先查 `ir.model.data` 拿到符合前綴的 `res_id` 清單，再用那些
+    id 去讀真正的 `price_subtotal` 欄位（`ir.model.data` 本身不帶業務
+    欄位）。沒有任何一筆符合前綴時回傳 `Decimal("0")`，不特別呼叫
+    `read([])`——Odoo 的 `read` 對空 id 清單雖然合法（回傳空 list），但
+    省一次沒有意義的 RPC。
+    """
+    prefix = f"{source_id}.{table}."
+    rows = client.execute_kw(
+        "ir.model.data",
+        "search_read",
+        [[["module", "=", _MIGRAI_MODULE], ["model", "=", target_model]]],
+        {"fields": ["name", "res_id"]},
+    )
+    if not isinstance(rows, list):
+        return Decimal("0")
+    res_ids = [
+        row["res_id"]
+        for row in rows
+        if isinstance(row, dict) and str(row.get("name", "")).startswith(prefix)
+    ]
+    if not res_ids:
+        return Decimal("0")
+    records = client.execute_kw(target_model, "read", [res_ids], {"fields": ["price_subtotal"]})
+    if not isinstance(records, list):
+        return Decimal("0")
+    return sum_target_amount(records)
+
+
+def _run_verify(
+    mapping_data: dict[str, Any], reader: SourceReader, client: OdooClient, *, source_id: str
+) -> list[Check]:
+    """跑一整場驗證：對 `mapping.json` 裡的每一張表做 `row_count` 比對，
+    另外對明細表（若找得到 `product_uom_qty`／`price_unit` 這組欄位）多做
+    一次 `amount_subtotal` 比對。
+
+    這是這個檔案裡唯一會呼叫 `client` 的函式（連同上面兩個 `_target_*`
+    helper）；「哪些表要查什麼」「查回來的數字算 pass 還是 fail」全部
+    委派給 `verify.py` 的純函式（`find_row_count_targets`／
+    `find_amount_subtotal_target`／`compare_row_count`／`compare_amount`／
+    `sum_source_amount`），這裡不重新判斷任何比對邏輯。
+    """
+    checks: list[Check] = []
+    for table, target_model in find_row_count_targets(mapping_data):
+        source_count = reader.count(table)
+        target_count = count_names_with_prefix(
+            _target_names(client, target_model=target_model), f"{source_id}.{table}."
+        )
+        checks.append(compare_row_count(table, target_model, source_count, target_count))
+
+    line_spec = find_amount_subtotal_target(mapping_data)
+    if line_spec is not None:
+        table, target_model, qty_column, price_column = line_spec
+        source_amount = sum_source_amount(
+            reader.rows(table), qty_column=qty_column, price_column=price_column
+        )
+        target_amount = _target_line_amount(
+            client, source_id=source_id, table=table, target_model=target_model
+        )
+        checks.append(
+            compare_amount(
+                table, target_model, source_amount, target_amount, rounding=VERIFICATION_ROUNDING
+            )
+        )
+    return checks
+
+
+@app.command(name="verify")
+def verify_command(
+    mapping: Path = typer.Option(  # noqa: B008
+        ...,
+        "--mapping",
+        help="map 產出的 mapping.json 路徑",
+    ),
+    source: Path = typer.Option(  # noqa: B008
+        ...,
+        "--source",
+        help="SQLite 來源資料庫（與 load 階段相同的那一份）",
+    ),
+    log: Path = typer.Option(  # noqa: B008
+        ...,
+        "--log",
+        help="load 產出的 migration_log.jsonl 路徑",
+    ),
+    source_id: str = typer.Option(  # noqa: B008
+        ...,
+        "--source-id",
+        help="必須與 load 階段使用的 --source-id 相同，否則查不到對應的 external_id",
+    ),
+    odoo_url: str = typer.Option(  # noqa: B008
+        ...,
+        "--odoo-url",
+        help="Odoo base URL，例如 http://localhost:8069",
+    ),
+    odoo_db: str = typer.Option(  # noqa: B008
+        ...,
+        "--odoo-db",
+        help="Odoo 資料庫名稱",
+    ),
+    odoo_user: str = typer.Option(  # noqa: B008
+        ...,
+        "--odoo-user",
+        help="Odoo 使用者帳號",
+    ),
+    password_stdin: bool = typer.Option(  # noqa: B008
+        False,
+        "--password-stdin",
+        help="從標準輸入讀取 Odoo 密碼；未指定則讀環境變數 MIGRAI_ODOO_PASSWORD",
+    ),
+    out: Path = typer.Option(  # noqa: B008
+        Path("out"),
+        "--out",
+        help="產出目錄，會寫入 verification_report.json、verification_report.md 與 events.jsonl",
+    ),
+    strict: bool = typer.Option(  # noqa: B008
+        False,
+        "--strict",
+        help="驗證階段的致命碼（E-5001／E-5002）本身就是 ERROR，此旗標目前不影響判定，"
+        "與 scan／map／load 保持相同的介面（為未來新增 WARN 等級檢查預留）。",
+    ),
+) -> None:
+    """比對 Odoo 裡的資料與來源資料庫，產出 verification_report.json／.md。
+
+    驗證階段只讀不寫，**報告永遠產出**——即使每一項檢查都失敗，也要先把
+    報告寫出來再決定 exit code（設計 spec §3.1／§5：「驗證階段只讀不寫，
+    永遠產出報告」）。唯一的例外是「連 Odoo 都連不上」：那種情況下連一個
+    誠實的數字都拿不到，寫出一份全是假數字的報告比不寫更糟，因此直接
+    exit 1 並指名原因，不寫報告。
+    """
+    try:
+        event_log = _fresh_event_log(out)
+    except OSError as exc:
+        typer.echo(f"✗ 無法寫入產出目錄 {out}：{exc}")
+        raise typer.Exit(code=1) from exc
+
+    # --log 是外部檔案（可能是舊版、手改過，或根本是別的檔案）：先驗證
+    # 存在、可讀、內容合法，不合法時指名路徑與原因，不讓裸例外逃出去
+    # （全域約束原則 6）。內容目前只用來在 stdout 印出載入階段的
+    # action 分布，供人核對「這次驗證對應的是哪一次載入」；不影響
+    # verification_report.json 的任何數字（那些一律現查 Odoo）。
+    try:
+        log_text = log.read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"✗ 讀不到 --log {log}：{exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        log_entries = parse_migration_log(log_text)
+    except MigrationLogReadError as exc:
+        typer.echo(f"✗ --log {log} 不是合法的 migration_log.jsonl：{exc}")
+        raise typer.Exit(code=1) from exc
+
+    try:
+        mapping_text = mapping.read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"✗ 讀不到 --mapping {mapping}：{exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        mapping_data = json.loads(mapping_text)
+    except json.JSONDecodeError as exc:
+        typer.echo(f"✗ --mapping {mapping} 不是合法的 JSON：{exc}")
+        raise typer.Exit(code=1) from exc
+
+    password = _resolve_password(password_stdin=password_stdin)
+    if not password:
+        typer.echo(
+            f"✗ 未提供密碼：請用 --password-stdin 從標準輸入讀取，或設定環境變數 {PASSWORD_ENV_VAR}"
+        )
+        raise typer.Exit(code=1)
+    client = OdooClient(url=odoo_url, db=odoo_db, user=odoo_user, password=password)
+
+    try:
+        with SqliteSourceReader(source) as reader:
+            checks = _run_verify(mapping_data, reader, client, source_id=source_id)
+    except SourceError as exc:
+        typer.echo(f"✗ {exc}")
+        raise typer.Exit(code=1) from exc
+    except OdooError as exc:
+        # 連線 Odoo 本身失敗（含認證失敗、限流重試耗盡——這裡不重試，
+        # 見任務書「刻意沒做的事」）：連一個誠實的數字都還沒拿到，這時候
+        # 寫出一份報告只會是全部欄位都缺失或是假數字，比不寫更容易誤導
+        # 使用者。這與「檢查真的跑完但結果是 fail」不同，那種情況一定要
+        # 寫報告（見下方，report 一律在决定 exit code 之前寫出）。
+        typer.echo(f"✗ 連線 Odoo 失敗：{exc}")
+        raise typer.Exit(code=1) from exc
+
+    synthetic = bool(mapping_data.get("inventory_synthetic", False))
+    report = build_report(checks, source_id=source_id, synthetic=synthetic)
+
+    json_path = out / VERIFICATION_REPORT_JSON_FILENAME
+    md_path = out / VERIFICATION_REPORT_MD_FILENAME
+    try:
+        # 🔴 報告永遠先寫出，才判斷 exit code——即使 checks 全部 fail。
+        json_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        md_path.write_text(render_markdown(report), encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"✗ 無法寫入產出目錄 {out}：{exc}")
+        raise typer.Exit(code=1) from exc
+
+    for check in checks:
+        if check.status == "fail":
+            code = E_5001 if check.kind == "row_count" else E_5002
+            event_log.emit(
+                "verify.check_failed",
+                code=code,
+                message=f"{check.source_table} → {check.target_model}（{check.kind}）未通過",
+                details={"source_table": check.source_table, "kind": check.kind},
+            )
+
+    fatal_event = event_log.last_fatal(Stage.VERIFY, strict=strict)
+    symbol = "✗" if fatal_event is not None else "✓"
+    log_counts = Counter(entry.get("action") for entry in log_entries)
+    typer.echo(
+        f"{symbol} 驗證完成：共 {report['summary']['total']} 項檢查"
+        f"（passed {report['summary']['passed']}、failed {report['summary']['failed']}）"
+    )
+    typer.echo(
+        f"  對照的載入紀錄：共 {len(log_entries)} 筆"
+        f"（created {log_counts['created']}、updated {log_counts['updated']}、"
+        f"failed {log_counts['failed']}、skipped {log_counts['skipped']}）"
+    )
+    if fatal_event is not None:
+        typer.echo(f"  原因：[{fatal_event['error_code']}] {fatal_event['message']}")
+    typer.echo(f"  → {json_path}")
+    typer.echo(f"  → {md_path}")
     typer.echo(f"  → {event_log.path}")
 
     if fatal_event is not None:
