@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import os
 import sqlite3
@@ -20,7 +22,9 @@ from contextlib import closing
 import pytest
 from typer.testing import CliRunner
 
+from erp_migrai import cli as cli_module
 from erp_migrai.cli import _resolve_source_counts, app, write_reports
+from erp_migrai.pipeline.planner import build_external_id
 from erp_migrai.pipeline.report import build_report
 from erp_migrai.pipeline.source import SqliteSourceReader
 from erp_migrai.pipeline.verify import Check
@@ -453,6 +457,58 @@ def test_log_with_matching_source_id_passes_the_check(
     assert "連線 Odoo 失敗" in result.stdout
 
 
+def test_log_with_hyphenated_source_id_passes_the_check(minimal_source, tmp_path, monkeypatch):
+    """最終整分支審查 Critical C1：上面兩條既有測試（含反例那條）的
+    `--source-id` 都是 `t1`——只含 `[A-Za-z0-9_]`，`encode_pk_value`
+    編碼前後看起來一模一樣，換成裸 f-string 的舊版實作在這個夾具上照樣
+    綠燈。
+
+    這裡改用 `task12-full`（CI 整合測試 `tests/integration/
+    test_odoo_roundtrip.py` 四條測試真正在用的 `source_id`），log
+    entry 的 `external_id` 用 `planner.build_external_id` 現算（跟
+    `load` 寫進 `migration_log.jsonl` 時同一顆函式），確認 `--log` 守衛
+    真的放行——舊版裸 f-string 實作會在這裡誤判成「與 --source-id
+    不符」，連 Odoo 都還沒連就先 exit 1，而且訊息會指向錯誤的原因。
+    """
+    monkeypatch.setenv("MIGRAI_ODOO_PASSWORD", "s3cret")
+    source_id = "task12-full"
+
+    mapping_path = tmp_path / "mapping.json"
+    mapping_path.write_text(json.dumps(_MINIMAL_MAPPING), encoding="utf-8")
+
+    log_entry = {**_LOG_ENTRY, "external_id": build_external_id(source_id, "cust", ["C001"])}
+    log_path = tmp_path / "migration_log.jsonl"
+    log_path.write_text(json.dumps(log_entry) + "\n", encoding="utf-8")
+
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app,
+        [
+            "verify",
+            "--mapping",
+            str(mapping_path),
+            "--source",
+            str(minimal_source),
+            "--log",
+            str(log_path),
+            "--source-id",
+            source_id,
+            "--odoo-url",
+            "http://127.0.0.1:1",
+            "--odoo-db",
+            "migrai",
+            "--odoo-user",
+            "admin",
+            "--out",
+            str(out),
+        ],
+    )
+
+    assert "不符" not in result.stdout
+    assert "連線 Odoo 失敗" in result.stdout
+    assert result.exit_code == 1
+
+
 # --------------------------------------------------------------------------
 # _resolve_source_counts：source_count 的分母只能來自 reader.count()
 # （審查修正輪次 1 Critical C1／M61）
@@ -500,6 +556,32 @@ def test_resolve_source_counts_covers_every_target_table(tmp_path):
         counts = _resolve_source_counts(reader, [("a", "res.partner"), ("b", "sale.order")])
 
     assert counts == {"a": 1, "b": 2}
+
+
+def test_target_line_amount_actually_calls_build_external_id_prefix():
+    """最終整分支審查 Critical C1：`_target_line_amount` 組 prefix 的那一行
+    （原本是裸 f-string `f"{source_id}.{table}."`）已經改成呼叫
+    `planner.build_external_id_prefix`——但這個函式本身需要一個真的會
+    回應 RPC 的 `OdooClient` 才測得到完整行為（`誠實界線`：不得起假
+    HTTP server／mock urlopen／寫 fake Odoo client，這個函式因此沒有
+    行為式測試直接覆蓋它）。用 AST 靜態檢查釘住「呼叫端真的有呼叫
+    `build_external_id_prefix`」，防止日後有人把這一行悄悄改回裸
+    f-string（precedent：同一份檔案的
+    `test_verify_command_actually_calls_resolve_synthetic`）。
+    """
+    source = inspect.getsource(cli_module)
+    tree = ast.parse(source)
+    node = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_target_line_amount"
+    )
+    called_names = {
+        call.func.id
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    }
+    assert "build_external_id_prefix" in called_names
 
 
 # --------------------------------------------------------------------------

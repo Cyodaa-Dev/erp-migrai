@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from erp_migrai.events import E_5001, E_5002
+from erp_migrai.pipeline.planner import build_external_id
 from erp_migrai.pipeline.verify import (
     KINDS,
     STATUSES,
@@ -596,6 +597,34 @@ def test_resolve_target_counts_missing_model_in_names_by_model_is_zero():
     targets = [("cust_mast", "res.partner")]
     result = resolve_target_counts(targets, "case03", {})
     assert result == {"cust_mast": 0}
+
+
+def test_resolve_target_counts_encodes_source_id_like_build_external_id():
+    """最終整分支審查 Critical C1：這條測試直接暴露 `case03` 這種只含
+    `[A-Za-z0-9_]` 的 `source_id` 掩蓋掉的問題——上面兩條既有測試都用
+    `case03`，`encode_pk_value("case03") == "case03"`，編碼前後看起來
+    一模一樣，換成裸 f-string 的舊版實作也照樣綠燈。
+
+    這裡改用 `task12-full`（CI 整合測試 `tests/integration/
+    test_odoo_roundtrip.py` 真正在用的 `source_id`，含 `encode_pk_value`
+    會跳脫的連字號），並且 `names_by_model` 不是手拼字串，而是直接呼叫
+    `build_external_id`（`load` 寫進 Odoo／`migration_log.jsonl` 時用的
+    同一顆函式）產生，再依 `ir.model.data` 的慣例砍掉 `migrai.` 這段
+    module 前綴——這樣「`resolve_target_counts` 組出來的 prefix」跟
+    「`build_external_id` 實際產出的字串」是不是同一套編碼，這條測試才
+    真的分辨得出來。舊版裸 f-string 實作在這個夾具上會把 `target_count`
+    算成 0（見 mutation 記錄）。
+    """
+    source_id = "task12-full"
+    table = "cust_mast"
+    full_external_id = build_external_id(source_id, table, ["C001"])
+    name_without_module = full_external_id.split(".", 1)[1]
+
+    targets = [(table, "res.partner")]
+    names_by_model = {"res.partner": [name_without_module]}
+
+    result = resolve_target_counts(targets, source_id, names_by_model)
+    assert result == {table: 1}
 
 
 # --------------------------------------------------------------------------

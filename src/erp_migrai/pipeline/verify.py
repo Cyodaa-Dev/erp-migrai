@@ -37,6 +37,7 @@ from typing import Any
 from jsonschema import Draft202012Validator, ValidationError
 
 from erp_migrai.events import E_5001, E_5002, ErrorCode
+from erp_migrai.pipeline.planner import build_external_id_prefix
 
 # --------------------------------------------------------------------------
 # Check：一條比對結果
@@ -276,7 +277,7 @@ def resolve_target_counts(
     """把「每個目標模型底下所有 `migrai.` 記錄的 name」（`names_by_model`，
     呼叫端已經用 `client.execute_kw` 查回來的原始資料）換算成
     `assemble_checks` 要用的 `target_counts` dict：每張來源表各自數出
-    「以 `<source_id>.<table>.` 開頭」的筆數。
+    「以 `<編碼後source_id>.<編碼後table>.` 開頭」的筆數。
 
     純函式：不碰 client，只做字串前綴的組裝與計數（委派給
     `count_names_with_prefix`）。審查修正輪次 1 Critical C1／M57：這段
@@ -285,10 +286,21 @@ def resolve_target_counts(
     不分 source_id、不分表，全部都算進去」）也不會被任何測試擋下；
     搬成獨立函式後可以直接餵夾具驗證 prefix 真的有在區隔不同表／不同
     `source_id`。
+
+    最終整分支審查 Critical C1：組 prefix 這裡原本是裸 f-string
+    `f"{source_id}.{table}."`，`source_id`／`table` 都沒過
+    `planner.encode_pk_value`——但 `build_external_id`（Task 7）寫入
+    `migration_log.jsonl`／Odoo 時兩者都過了編碼。只要 `source_id` 或
+    `table` 含 `[A-Za-z0-9_]` 以外的字元（例如 CI 整合測試用的
+    `task12-full`），這裡組出來的 prefix 就永遠對不上實際寫入的
+    external_id，`target_count` 會悄悄變成 0——這正是「絕不悄悄產生錯的
+    輸出」要擋的形狀。現在改呼叫 `planner.build_external_id_prefix`，
+    跟 `build_external_id` 共用同一顆 `encode_pk_value`，兩邊不會再各自
+    漂移。
     """
     return {
         table: count_names_with_prefix(
-            names_by_model.get(target_model, ()), f"{source_id}.{table}."
+            names_by_model.get(target_model, ()), build_external_id_prefix(source_id, table)
         )
         for table, target_model in targets
     }
@@ -427,10 +439,12 @@ def find_mismatched_external_ids(entries: Iterable[Mapping[str, Any]], *, prefix
     build_external_id` 的字面契約），不符代表這份 log 根本不是這次
     `--source-id` 對應的那次載入——純字串比對，不需要連 Odoo。
 
-    刻意不在這裡把 `"migrai."` 這個 module 段寫死：呼叫端（`cli.py`）已經
-    有 `_MIGRAI_MODULE` 這個常數，`prefix` 由呼叫端組好（`f"{_MIGRAI_MODULE}.
-    {source_id}."`）再傳進來，這個函式只管字串比對，不重複假設模組前綴
-    的字面值。
+    刻意不在這裡把 `"migrai."` 這個 module 段寫死：`prefix` 由呼叫端
+    （`cli.py`，用 `planner.build_external_id_module_prefix(source_id)`
+    組好，跟 `build_external_id` 寫入時同一套 `encode_pk_value`——最終
+    整分支審查 Critical C1：舊版呼叫端是裸 f-string，沒有編碼，`source_id`
+    含特殊字元時會誤判合法的 log 為不符）再傳進來，這個函式只管字串
+    比對，不重複假設模組前綴的字面值或編碼規則。
     """
     return [
         str(entry.get("external_id", ""))

@@ -121,6 +121,46 @@ def build_external_id(source_id: str, table: str, pk_values: Sequence[Any]) -> s
     return f"migrai.{encode_pk_value(source_id)}.{encode_pk_value(table)}.{encoded_pk}"
 
 
+def build_external_id_module_prefix(source_id: str) -> str:
+    """`build_external_id` 產出字串裡 `migrai.` 之後、`table` 之前的那一段
+    （即只到 `source_id` 為止的前綴，`migrai.<編碼後source_id>.`）。
+
+    最終整分支審查 Critical C1：Task 11 有幾處只需要按 `source_id` 過濾
+    （不管 `table`），原本各自用裸 f-string `f"{_MIGRAI_MODULE}.{source_id}."`
+    組這段前綴，沒有過 `encode_pk_value`——`build_external_id` 寫入時
+    `source_id` 是編碼過的，這裡比對時卻拿未編碼的原始值去 `startswith`，
+    兩者只在 `source_id` 剛好只含 `[A-Za-z0-9_]` 時碰巧相等（例如
+    `case03`），一旦 `source_id` 含 `-`／`.` 等字元（例如 CI 整合測試用的
+    `task12-full`）就永遠比對不上，`verify` 會把「找不到任何一筆」誤判成
+    「一筆都沒載入成功」。單一事實來源：這裡跟 `build_external_id` 用
+    同一顆 `encode_pk_value`，往後編碼規則變動只需要改一個地方。
+    """
+    return f"migrai.{encode_pk_value(source_id)}."
+
+
+def build_external_id_prefix(source_id: str, table: str) -> str:
+    """`build_external_id` 產出字串裡 `migrai.` 之後、PK 之前的那一段
+    （`<編碼後source_id>.<編碼後table>.`，**不含** `migrai.` 這段模組
+    前綴）。
+
+    刻意不含 `migrai.`：呼叫端是 `verify.resolve_target_counts` 與
+    `cli._target_line_amount`，兩者比對的對象都是 Odoo `ir.model.data`
+    的 `name` 欄位——Odoo 把 external id 拆成 `module`／`name` 兩欄分開
+    存放，`name` 欄位本身就不含 module 前綴（查詢時已經用
+    `ir_model_data_domain(module=...)` 篩過 module），所以這裡組出來的
+    前綴也不該含 `migrai.`，否則永遠比對不上（見
+    `build_external_id_module_prefix`，那個函式才含 `migrai.`，給比對
+    對象是「完整 external_id 字串」的呼叫端用，例如
+    `find_mismatched_external_ids` 讀的 `migration_log.jsonl`）。
+
+    理由同 `build_external_id_module_prefix`：組這段前綴的地方原本各自
+    用裸 f-string，沒有過 `encode_pk_value`，跟 `build_external_id` 寫入
+    時的編碼對不上。這裡直接呼叫 `encode_pk_value`，確保「組前綴」永遠
+    跟「組完整 external_id」用同一套編碼，不會再各自漂移。
+    """
+    return f"{encode_pk_value(source_id)}.{encode_pk_value(table)}."
+
+
 @dataclass(frozen=True)
 class ColumnPlan:
     """一個來源欄位要怎麼寫進 Odoo。

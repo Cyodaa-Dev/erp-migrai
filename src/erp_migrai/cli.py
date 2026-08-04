@@ -36,6 +36,7 @@ from erp_migrai.mapping.rules_loader import RuleError
 from erp_migrai.mapping.writer import MappingSchemaError, MappingSerializationError
 from erp_migrai.pipeline.loader import LogEntrySchemaError, run_load
 from erp_migrai.pipeline.odoo_client import OdooClient, OdooError
+from erp_migrai.pipeline.planner import build_external_id_module_prefix, build_external_id_prefix
 from erp_migrai.pipeline.report import (
     ReportSchemaError,
     build_report,
@@ -525,8 +526,13 @@ def _target_line_amount(
     寫死字面值）。沒有任何一筆符合前綴時回傳 `Decimal("0")`，不特別呼叫
     `read([])`——Odoo 的 `read` 對空 id 清單雖然合法（回傳空 list），但
     省一次沒有意義的 RPC。
+
+    最終整分支審查 Critical C1：`prefix` 原本是裸 f-string
+    `f"{source_id}.{table}."`，沒有過 `planner.encode_pk_value`，跟
+    `build_external_id` 寫入時的編碼對不上（理由與修法見
+    `planner.build_external_id_prefix` docstring）。
     """
-    prefix = f"{source_id}.{table}."
+    prefix = build_external_id_prefix(source_id, table)
     rows = client.execute_kw(
         "ir.model.data",
         "search_read",
@@ -688,7 +694,18 @@ def verify_command(
     # external_id 都該以 `migrai.<source_id>.` 開頭（`planner.
     # build_external_id` 的字面契約），不符代表這份 log 根本不是這次
     # --source-id 對應的那次載入。純字串比對，在連線 Odoo 之前就能擋下。
-    mismatched = find_mismatched_external_ids(log_entries, prefix=f"{_MIGRAI_MODULE}.{source_id}.")
+    #
+    # 最終整分支審查 Critical C1：這裡的 prefix 原本是裸 f-string
+    # `f"{_MIGRAI_MODULE}.{source_id}."`，`source_id` 沒有過
+    # `planner.encode_pk_value`，跟 `build_external_id` 寫入
+    # migration_log.jsonl 時的編碼對不上——`source_id` 含 `-` 等字元時
+    # （例如 CI 整合測試用的 `task12-full`）這裡會在連 Odoo 之前就把
+    # 合法的 log 誤判成「與 --source-id 不符」。改呼叫
+    # `planner.build_external_id_module_prefix`，跟 `build_external_id`
+    # 共用同一顆 `encode_pk_value`。
+    mismatched = find_mismatched_external_ids(
+        log_entries, prefix=build_external_id_module_prefix(source_id)
+    )
     if mismatched:
         sample = "、".join(mismatched[:5])
         typer.echo(

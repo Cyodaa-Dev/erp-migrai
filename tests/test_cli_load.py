@@ -24,6 +24,7 @@ import pytest
 from typer.testing import CliRunner
 
 from erp_migrai.cli import app
+from erp_migrai.pipeline.planner import build_external_id_module_prefix, build_external_id_prefix
 
 # chmod 500 在 root 下沒有意義，precedent：test_cli.py 的 _IS_ROOT。
 _IS_ROOT = hasattr(os, "getuid") and os.getuid() == 0
@@ -589,3 +590,73 @@ def test_e4001_abort_prints_failure_symbol_and_names_the_reason(tmp_path):
     ]
     assert any(e["error_code"] == "E-4001" for e in events)
     assert (out / "migration_log.jsonl").read_text(encoding="utf-8") == ""
+
+
+# --------------------------------------------------------------------------
+# 最終整分支審查 Critical C1：`verify` 組前綴要跟 `load` 寫出的
+# external_id 用同一套編碼
+# --------------------------------------------------------------------------
+
+
+def test_c1_external_id_prefix_helpers_match_load_output_for_hyphenated_source_id(
+    minimal_mapping_path, minimal_source, tmp_path
+):
+    """回歸測試：`planner.build_external_id_prefix`／
+    `build_external_id_module_prefix`（`verify` 側用來比對 Odoo／log 的
+    前綴）必須能對上 `load`（`planner.build_external_id`）實際寫進
+    `migration_log.jsonl` 的 `external_id`。
+
+    🔴 刻意不用 `case03` 當夾具：`encode_pk_value("case03") == "case03"`
+    （只含 `[A-Za-z0-9_]`），編碼前後看起來一模一樣，這條測試若用它就是
+    空轉的——連原本的 bug（裸 f-string 沒過 `encode_pk_value`）都測不出來。
+    這裡改用 `task12-full`：CI 整合測試（`tests/integration/
+    test_odoo_roundtrip.py`）四條測試真正在用的 `source_id`，也是最終
+    整分支審查實跑抓到「`verify` 找不到任何一筆」這個缺陷時用的值。
+
+    純字串比對：`load --dry-run` 不連 Odoo，這裡也不用起任何假 server。
+    """
+    out = tmp_path / "out"
+    source_id = "task12-full"
+
+    result = runner.invoke(
+        app,
+        [
+            "load",
+            "--mapping",
+            str(minimal_mapping_path),
+            "--source",
+            str(minimal_source),
+            "--source-id",
+            source_id,
+            "--out",
+            str(out),
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0
+
+    entries = [
+        json.loads(line)
+        for line in (out / "migration_log.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert entries, "沒有任何一筆 migration_log 記錄，這條測試沒有東西可以比對"
+    entry = entries[0]
+    assert entry["source_table"] == "cust"
+
+    # cli._resolve_source_counts 場景之外的另一半：cli.verify_command 讀
+    # --log 用的前綴（比對「完整 external_id」，含 migrai. 這段 module）。
+    module_prefix = build_external_id_module_prefix(source_id)
+    assert entry["external_id"].startswith(module_prefix), (
+        f"{entry['external_id']!r} 對不上 module 前綴 {module_prefix!r}——"
+        "cli.verify_command 的 --log 守衛會誤判合法的 log 為與 --source-id 不符"
+    )
+
+    # verify.resolve_target_counts／cli._target_line_amount 場景：比對的
+    # 對象是 ir.model.data 的 name 欄位，Odoo 已經把 module 段拆掉了，
+    # 所以這裡比對時也要先把 "migrai." 去掉再比。
+    name_without_module = entry["external_id"][len("migrai.") :]
+    table_prefix = build_external_id_prefix(source_id, entry["source_table"])
+    assert name_without_module.startswith(table_prefix), (
+        f"{name_without_module!r} 對不上表前綴 {table_prefix!r}——"
+        "verify 會把這張表的 target_count 誤算成 0，對每張表發出不存在的 E-5001"
+    )
