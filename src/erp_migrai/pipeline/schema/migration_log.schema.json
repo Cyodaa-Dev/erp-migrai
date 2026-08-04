@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cyodaa-Dev/erp-migrai/schema/migration_log-1.0.json",
+  "title": "ERP MIGRAI migration_log",
+  "description": "migrai load 的產出，每一列對應來源資料的一筆記錄。刻意不帶時間戳——時間只住在 events.jsonl，兩份檔案用 run_id join。這是對下游（含商業版 consumer 與 Task 11 驗證階段）承諾的公開格式，破壞相容性必須升版 schema_version（本檔案自己不帶 schema_version 欄位，因為每一列本身不是一份完整文件；版本資訊由檔名/發行說明追蹤，與 mapping.json／verification_report.json 兩種帶版號的頂層文件不同）。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "source_table",
+    "source_pk",
+    "external_id",
+    "target_model",
+    "action",
+    "odoo_id",
+    "error_code",
+    "message"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "與 events.jsonl 同一次執行的 run_id，兩份檔案靠這個欄位 join。"
+    },
+    "source_table": {
+      "type": "string"
+    },
+    "source_pk": {
+      "type": "array",
+      "description": "來源記錄的主鍵值（依序），字串化後的原值——不是 external_id 使用的 percent-encoding 編碼結果，純粹給人閱讀／除錯用。",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "external_id": {
+      "type": "string",
+      "description": "`migrai.<source_id>.<source_table>.<編碼後PK>` 形狀，見 planner.build_external_id。"
+    },
+    "target_model": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string",
+      "description": "created：Odoo 中原本沒有這個 external_id，這次新建。updated：Odoo 中已有這個 external_id，這次覆寫（冪等重跑的正常結果）。failed：轉換或寫入失敗，error_code 必為非 null。skipped：未嘗試寫入——這筆的 reference 指向的來源記錄本身是 failed（或本身處於 dry-run，未連線 Odoo）。四個值互斥且窮盡，不得有第五種。",
+      "enum": ["created", "updated", "failed", "skipped"]
+    },
+    "odoo_id": {
+      "type": ["integer", "null"],
+      "description": "寫入成功（created／updated）時是 Odoo 那筆記錄的資料庫 id；failed／skipped 一律為 null。"
+    },
+    "error_code": {
+      "type": ["string", "null"],
+      "description": "failed 時必為非 null（E-4001／E-4002／E-4003 之一）；skipped 不另外發錯誤碼（根因那一筆已經發過 E-4002），因此 skipped 與 created／updated 一樣一律為 null。"
+    },
+    "message": {
+      "type": "string",
+      "description": "created／updated 通常是空字串；failed 說明失敗原因；skipped 必須點名是哪一筆父記錄失敗，或說明這是 dry-run。"
+    }
+  }
+}

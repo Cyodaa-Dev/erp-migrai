@@ -14,7 +14,10 @@ exit code 契約：
 from __future__ import annotations
 
 import json
+import os
+import sys
 import uuid
+from collections import Counter
 from pathlib import Path
 
 import typer
@@ -28,6 +31,9 @@ from erp_migrai.mapping.engine import MapFailed
 from erp_migrai.mapping.pipeline import InventoryReadError, InventoryValidationError, run_map
 from erp_migrai.mapping.rules_loader import RuleError
 from erp_migrai.mapping.writer import MappingSchemaError, MappingSerializationError
+from erp_migrai.pipeline.loader import LogEntrySchemaError, run_load
+from erp_migrai.pipeline.odoo_client import OdooClient
+from erp_migrai.pipeline.source import SourceError, SqliteSourceReader
 
 app = typer.Typer(
     add_completion=False,
@@ -35,6 +41,10 @@ app = typer.Typer(
 )
 
 EVENTS_FILENAME = "events.jsonl"
+
+# P3-2：密碼只收環境變數或 --password-stdin，不實作 --password 旗標——
+# 密碼進 argv 會被同機器上任何使用者用 `ps` 看到，也會落進 shell 歷史。
+PASSWORD_ENV_VAR = "MIGRAI_ODOO_PASSWORD"
 
 
 def _fresh_event_log(out_dir: Path) -> EventLog:
@@ -255,6 +265,158 @@ def map_command(
             typer.echo(f"  {origin}")
 
     if event_log.has_fatal(Stage.MAP, strict=strict):
+        raise typer.Exit(code=1)
+
+
+def _resolve_password(*, password_stdin: bool) -> str:
+    """密碼只從 `--password-stdin` 或 `MIGRAI_ODOO_PASSWORD` 讀（P3-2）。
+
+    刻意沒有 `--password` 旗標：密碼進 argv 會被同機器上任何使用者用
+    `ps` 看到，也會落進 shell 歷史，README／`make` 目標裡的範例指令
+    會教使用者養成這個危險習慣。
+    """
+    if password_stdin:
+        return sys.stdin.readline().rstrip("\r\n")
+    return os.environ.get(PASSWORD_ENV_VAR, "")
+
+
+@app.command(name="load")
+def load_command(
+    mapping: Path = typer.Option(  # noqa: B008
+        ...,
+        "--mapping",
+        help="map 產出的 mapping.json 路徑",
+    ),
+    source: Path = typer.Option(  # noqa: B008
+        ...,
+        "--source",
+        help="SQLite 來源資料庫（make corpus 產生的 data.sqlite）",
+    ),
+    source_id: str = typer.Option(  # noqa: B008
+        ...,
+        "--source-id",
+        help="區隔不同來源系統或批次的字串，會進 external_id",
+    ),
+    odoo_url: str | None = typer.Option(  # noqa: B008
+        None,
+        "--odoo-url",
+        help="Odoo base URL，例如 http://localhost:8069（--dry-run 時可省略）",
+    ),
+    odoo_db: str | None = typer.Option(  # noqa: B008
+        None,
+        "--odoo-db",
+        help="Odoo 資料庫名稱（--dry-run 時可省略）",
+    ),
+    odoo_user: str | None = typer.Option(  # noqa: B008
+        None,
+        "--odoo-user",
+        help="Odoo 使用者帳號（--dry-run 時可省略）",
+    ),
+    password_stdin: bool = typer.Option(  # noqa: B008
+        False,
+        "--password-stdin",
+        help="從標準輸入讀取 Odoo 密碼；未指定則讀環境變數 MIGRAI_ODOO_PASSWORD"
+        "（--dry-run 時不需要密碼）。",
+    ),
+    out: Path = typer.Option(  # noqa: B008
+        Path("out"),
+        "--out",
+        help="產出目錄，會寫入 migration_log.jsonl 與 events.jsonl",
+    ),
+    batch_size: int = typer.Option(  # noqa: B008
+        100,
+        "--batch-size",
+        help="整批寫入 Odoo 的批次大小；整批失敗會自動降級逐筆重試",
+    ),
+    dry_run: bool = typer.Option(  # noqa: B008
+        False,
+        "--dry-run",
+        help="不連線 Odoo，走完讀取／轉換／排序／組 payload 的全部路徑；"
+        "migration_log.jsonl 的 action 一律 skipped。給本機沒有 Odoo 的貢獻者用。",
+    ),
+    strict: bool = typer.Option(  # noqa: B008
+        False,
+        "--strict",
+        help="把 ERROR／CRITICAL 等級的事件也視為失敗（exit 1）；"
+        "E-4004／E-4005（WARN）不受影響，仍視為完成。",
+    ),
+) -> None:
+    """把 `mapping.json` 描述的對應關係寫進 Odoo，產出 migration_log.jsonl。"""
+    try:
+        event_log = _fresh_event_log(out)
+    except OSError as exc:
+        typer.echo(f"✗ 無法寫入產出目錄 {out}：{exc}")
+        raise typer.Exit(code=1) from exc
+
+    client: OdooClient | None = None
+    if not dry_run:
+        # --dry-run 是為本機沒有 Odoo 的貢獻者服務的（D1 貢獻門檻）：
+        # 非 --dry-run 執行才需要真的湊齊連線資訊與密碼。
+        missing = [
+            name
+            for name, value in (
+                ("--odoo-url", odoo_url),
+                ("--odoo-db", odoo_db),
+                ("--odoo-user", odoo_user),
+            )
+            if not value
+        ]
+        if missing:
+            typer.echo(f"✗ 非 --dry-run 執行必須提供 {'、'.join(missing)}")
+            raise typer.Exit(code=1)
+
+        password = _resolve_password(password_stdin=password_stdin)
+        if not password:
+            typer.echo(
+                "✗ 未提供密碼：請用 --password-stdin 從標準輸入讀取，"
+                f"或設定環境變數 {PASSWORD_ENV_VAR}（--dry-run 不需要密碼）"
+            )
+            raise typer.Exit(code=1)
+        client = OdooClient(url=odoo_url, db=odoo_db, user=odoo_user, password=password)
+
+    try:
+        with SqliteSourceReader(source) as reader:
+            try:
+                mapping_text = mapping.read_text(encoding="utf-8")
+            except OSError as exc:
+                typer.echo(f"✗ 讀不到 --mapping {mapping}：{exc}")
+                raise typer.Exit(code=1) from exc
+            try:
+                mapping_data = json.loads(mapping_text)
+            except json.JSONDecodeError as exc:
+                typer.echo(f"✗ --mapping {mapping} 不是合法的 JSON：{exc}")
+                raise typer.Exit(code=1) from exc
+
+            result = run_load(
+                mapping_data,
+                reader,
+                client,
+                source_id=source_id,
+                out_dir=out,
+                event_log=event_log,
+                batch_size=batch_size,
+                dry_run=dry_run,
+            )
+    except SourceError as exc:
+        typer.echo(f"✗ {exc}")
+        raise typer.Exit(code=1) from exc
+    except (LogEntrySchemaError, ValueError) as exc:
+        typer.echo(f"✗ {exc}")
+        raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        typer.echo(f"✗ 無法寫入產出目錄 {out}：{exc}")
+        raise typer.Exit(code=1) from exc
+
+    counts = Counter(entry.action for entry in result.entries)
+    typer.echo(
+        f"✓ 載入完成：共 {len(result.entries)} 筆"
+        f"（created {counts['created']}、updated {counts['updated']}、"
+        f"failed {counts['failed']}、skipped {counts['skipped']}）"
+    )
+    typer.echo(f"  → {result.log_path}")
+    typer.echo(f"  → {event_log.path}")
+
+    if event_log.has_fatal(Stage.LOAD, strict=strict):
         raise typer.Exit(code=1)
 
 
