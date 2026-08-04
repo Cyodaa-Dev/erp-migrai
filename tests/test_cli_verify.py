@@ -340,9 +340,40 @@ def test_connection_failure_does_not_leak_password_and_writes_no_report(
     assert not (out / "verification_report.json").exists()
     assert not (out / "verification_report.md").exists()
 
+    # Task 13 F 項：連不上 Odoo 時「不寫報告」是刻意決定，但機器軌
+    # （events.jsonl）不該因此變成 0 bytes——雙軌輸出只剩一軌是一個
+    # 真正的洞，見 cli.verify_command 裡 `except OdooError` 那段註解。
     events_path = out / "events.jsonl"
-    if events_path.is_file():
-        assert secret not in events_path.read_text(encoding="utf-8")
+    assert events_path.is_file()
+    events_text = events_path.read_text(encoding="utf-8")
+    assert events_text != ""
+    assert secret not in events_text
+
+
+def test_odoo_connection_failure_emits_an_event_without_a_new_error_code(
+    minimal_mapping_path, minimal_source, minimal_log_path, tmp_path, monkeypatch
+):
+    """釘住 Task 13 F 項補的那則事件：`event_type` 可辨識、`severity` 是
+    `ERROR`、`error_code` 是 `None`（🔴 控制者裁決：不新增錯誤碼，11 個
+    原碼原意不改是既有治理決定；`EventLog.emit` 的 `code` 參數本來就
+    允許 `None` 並可單獨指定 `severity`）。"""
+    monkeypatch.setenv("MIGRAI_ODOO_PASSWORD", "s3cret")
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app, _connect_args(minimal_mapping_path, minimal_source, minimal_log_path, out)
+    )
+
+    assert result.exit_code == 1
+    events_path = out / "events.jsonl"
+    lines = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) >= 1
+    connection_events = [e for e in lines if e["event_type"] == "verify.connection_failed"]
+    assert len(connection_events) == 1
+    event = connection_events[0]
+    assert event["severity"] == "ERROR"
+    assert event["error_code"] is None
+    assert event["message"] != ""
 
 
 def test_connection_failure_does_not_require_odoo_reachable_to_validate_log_and_mapping_first(

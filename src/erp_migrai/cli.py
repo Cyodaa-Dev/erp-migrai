@@ -26,7 +26,7 @@ from typing import Any
 import typer
 
 from erp_migrai import __version__
-from erp_migrai.events import EventLog, Stage
+from erp_migrai.events import EventLog, Severity, Stage
 from erp_migrai.inventory.extractor import ScanFailed, write_inventory
 from erp_migrai.inventory.extractor import scan as run_scan
 from erp_migrai.mapping.catalog import CatalogError
@@ -731,6 +731,20 @@ def verify_command(
         # 寫報告（見下方，report 一律在决定 exit code 之前寫出）。
         # `exc` 的訊息本身在多數連線失敗情境下已經含「連線 Odoo 失敗：」
         # （見 odoo_client.py 的 `_send()`），這裡不再疊加一次相同前綴。
+        #
+        # 🔴 Task 13：報告不寫沒關係（上面那段已經說明理由），但機器軌
+        # （events.jsonl）在這條路徑上完全空白——總設計 §4.3「雙軌輸出：
+        # stdout 給人、events.jsonl 給機器」在這裡只剩一軌。這不是要新增
+        # 錯誤碼（那會牽動 §4.1「保留的 11 個原碼原意不改」的治理決定），
+        # `EventLog.emit` 的 `code` 參數本來就允許 `None` 並可單獨指定
+        # `severity`，所以這裡發一則 `code=None`、`severity=ERROR` 的事件，
+        # 讓機器軌至少記得「這次執行連 Odoo 都連不上」，不動 11 個錯誤碼
+        # 的契約。
+        event_log.emit(
+            "verify.connection_failed",
+            severity=Severity.ERROR,
+            message=str(exc),
+        )
         typer.echo(f"✗ {exc}")
         raise typer.Exit(code=1) from exc
 
