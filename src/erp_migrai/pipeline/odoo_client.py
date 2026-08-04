@@ -278,7 +278,18 @@ class OdooClient:
         確保兩種寫法都組出同一個端點，不會出現
         `http://host:8069//jsonrpc` 這種雙斜線。這是全 repo 唯一知道
         `/jsonrpc` 這個路由字面值的地方，呼叫端不必也不該自己記得接。
+
+        scheme 檢查刻意放在這個**純函式**裡，而不是放在 `_send`：
+        `urlopen` 對 `file://` 一樣會動作，`url` 又來自使用者設定，這是
+        必須擋的；但放在 `_send` 裡的守衛量不準——把它拿掉之後，
+        `ftp://`／`file://` 的測試仍然會通過，因為那些 URL 連不上、
+        `urlopen` 拋的 `URLError` 照樣被轉成 `OdooError`，測試分辨不出
+        「scheme 被擋下」與「連線失敗」。放在這裡就沒有這個歧義：這個
+        函式完全不碰網路，唯一會拋 `OdooError` 的原因就是 scheme 不對。
         """
+        scheme = urlparse(self.url).scheme
+        if scheme not in ("http", "https"):
+            raise OdooError(f"不支援的 URL scheme：{self.url!r}（只接受 http／https）")
         return self.url.rstrip("/") + "/jsonrpc"
 
     def _parse_response(self, raw: bytes) -> dict[str, Any]:
@@ -336,12 +347,13 @@ class OdooClient:
         本機不對這個方法起假 HTTP server 測試（Global Constraints 第
         2 條禁止），它的正確性留給 Task 12 的 CI 整合測試驗證。
         """
-        scheme = urlparse(self.url).scheme
-        if scheme not in ("http", "https"):
-            raise OdooError(f"不支援的 URL scheme：{self.url!r}（只接受 http／https）")
+        # scheme 檢查住在 `_endpoint()` 裡（見該函式 docstring：放在這裡的話
+        # 守衛量不準），這裡呼叫它就會順帶擋下 file://、ftp:// 這類 URL，
+        # 而且是在 urlopen 之前。
+        endpoint = self._endpoint()
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
-            self._endpoint(),
+            endpoint,
             data=data,
             headers={"Content-Type": "application/json"},
         )

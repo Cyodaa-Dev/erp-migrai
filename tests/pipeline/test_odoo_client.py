@@ -497,13 +497,25 @@ def test_send_passes_self_timeout_to_urlopen():
 
 
 @pytest.mark.parametrize("bad_url", ["ftp://x", "file:///etc/passwd", "javascript:alert(1)", ""])
-def test_send_rejects_non_http_scheme(bad_url):
-    """`_send` 在真的呼叫 `urlopen` 之前就要擋下非 http/https 的
-    scheme——這裡不會碰到網路，驗證在 urlopen 之前就短路了。
+def test_endpoint_rejects_non_http_scheme(bad_url):
+    """非 http/https 的 scheme 必須被擋下——`urlopen` 對 `file://` 一樣會
+    動作，而 `url` 來自使用者設定。
+
+    🔴 這條測試刻意打在 `_endpoint()`（純函式）而不是 `_send()`。控制者
+    複驗時實測過：檢查放在 `_send` 裡時，把整段檢查拿掉，`ftp://`／
+    `file://`／`javascript:` 三個案例**仍然通過**——因為那些 URL 連不上，
+    `urlopen` 拋的 `URLError` 照樣被轉成 `OdooError`，測試分辨不出「scheme
+    被擋下」與「連線失敗」。四個案例裡只有空字串會紅，而且紅的原因是
+    urllib 噴出一個不是 `OdooError` 的裸 `ValueError`——也就是說那條守衛
+    連自己宣稱守的東西都沒守到。
+
+    打在 `_endpoint()` 上就沒有這個歧義：它完全不碰網路，唯一會拋
+    `OdooError` 的原因就是 scheme 不對。
     """
     client = _client(url=bad_url)
-    with pytest.raises(OdooError):
-        client._send({"jsonrpc": "2.0"})
+    with pytest.raises(OdooError) as exc:
+        client._endpoint()
+    assert "scheme" in str(exc.value)
 
 
 # --------------------------------------------------------------------------
