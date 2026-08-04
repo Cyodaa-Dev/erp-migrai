@@ -307,6 +307,68 @@ def test_mapping_invalid_json_exits_one_without_traceback(minimal_source, tmp_pa
     assert result.exception is None or not isinstance(result.exception, OSError)
 
 
+# --------------------------------------------------------------------------
+# 最終整分支審查 Important I1：--mapping 讀進來要驗 schema，四種壞輸入都不
+# 能是裸 traceback
+# --------------------------------------------------------------------------
+
+
+def _mapping_missing_target_model() -> dict:
+    """`mapping["models"][0]` 缺 `target_model`——`plan_load` 會直接
+    `KeyError: 'target_model'`（見 `planner._odoo_field` 上一層
+    `table_to_model` 的 dict comprehension）。"""
+    payload = json.loads(json.dumps(_MINIMAL_MAPPING))  # 深拷貝，不動到共用夾具
+    del payload["models"][0]["target_model"]
+    return payload
+
+
+def _mapping_missing_source_table() -> dict:
+    """`mapping["mappings"][0]["source"]` 缺 `table`——`plan_load` 會直接
+    `KeyError: 'table'`。"""
+    payload = json.loads(json.dumps(_MINIMAL_MAPPING))
+    del payload["mappings"][0]["source"]["table"]
+    return payload
+
+
+# (壞輸入本身, 壞輸入的簡短描述——僅供測試 id 使用)
+_BAD_MAPPING_SCHEMA_INPUTS = [
+    ([1, 2, 3], "top_level_is_a_list"),
+    ("hello", "top_level_is_a_string"),
+    (_mapping_missing_target_model(), "missing_target_model"),
+    (_mapping_missing_source_table(), "missing_source_table"),
+]
+
+
+@pytest.mark.parametrize(
+    "bad_mapping",
+    [payload for payload, _ in _BAD_MAPPING_SCHEMA_INPUTS],
+    ids=lambda p: repr(p)[:30],
+)
+def test_load_schema_invalid_mapping_exits_one_without_traceback(
+    bad_mapping, minimal_source, tmp_path
+):
+    """審查員實測（修法前）：`[1,2,3]` → `TypeError: list indices must be
+    integers`；`"hello"` → `TypeError`；缺 `target_model` → `KeyError:
+    'target_model'`；缺 `source.table` → `KeyError: 'table'`——四種都是
+    裸 traceback，使用者看不出「壞的是 --mapping 本身」。
+
+    `mapping/writer.py` 已經有現成的 `validate_mapping`（`write_mapping`
+    寫出前必呼叫的同一顆），`cli.load_command` 讀進 `--mapping` 之後原本
+    完全沒有呼叫它——沒有理由不驗，這裡補上同樣的守衛，四種壞輸入都要
+    變成 exit 1 且 stdout 不含 `Traceback`。
+    """
+    bad_path = tmp_path / "bad_mapping.json"
+    bad_path.write_text(json.dumps(bad_mapping), encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = runner.invoke(app, _dry_run_args(bad_path, minimal_source, out))
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stdout
+    assert "✗" in result.stdout
+    assert "mapping.schema.json" in result.stdout
+
+
 def test_missing_source_database_exits_one_without_traceback(minimal_mapping_path, tmp_path):
     missing = tmp_path / "nope.sqlite"
     out = tmp_path / "out"

@@ -264,6 +264,54 @@ def test_mapping_invalid_json_exits_one_without_traceback(
     assert "Traceback" not in result.stdout
 
 
+# --------------------------------------------------------------------------
+# 最終整分支審查 Important I1：--mapping 讀進來要驗 schema，四種壞輸入都不
+# 能是裸 traceback（precedent：test_cli_load.py 的同名測試）
+# --------------------------------------------------------------------------
+
+
+def _mapping_missing_target_model() -> dict:
+    payload = json.loads(json.dumps(_MINIMAL_MAPPING))  # 深拷貝，不動到共用夾具
+    del payload["models"][0]["target_model"]
+    return payload
+
+
+def _mapping_missing_source_table() -> dict:
+    payload = json.loads(json.dumps(_MINIMAL_MAPPING))
+    del payload["mappings"][0]["source"]["table"]
+    return payload
+
+
+_BAD_MAPPING_SCHEMA_INPUTS = [
+    [1, 2, 3],
+    "hello",
+    _mapping_missing_target_model(),
+    _mapping_missing_source_table(),
+]
+
+
+@pytest.mark.parametrize("bad_mapping", _BAD_MAPPING_SCHEMA_INPUTS, ids=lambda p: repr(p)[:30])
+def test_verify_schema_invalid_mapping_exits_one_without_traceback(
+    bad_mapping, minimal_source, minimal_log_path, tmp_path, monkeypatch
+):
+    """審查員實測（修法前）：`[1,2,3]` → `AttributeError: 'list' object has
+    no attribute 'get'`；`"hello"` → `AttributeError`；缺 `target_model`／
+    缺 `source.table` → `KeyError`——四種都是裸 traceback。跟 `load` 共用
+    同一顆 `validate_mapping`，這裡驗證 `verify` 側也補上了同樣的守衛。
+    """
+    monkeypatch.setenv("MIGRAI_ODOO_PASSWORD", "s3cret")
+    bad_path = tmp_path / "bad_mapping.json"
+    bad_path.write_text(json.dumps(bad_mapping), encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = runner.invoke(app, _connect_args(bad_path, minimal_source, minimal_log_path, out))
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stdout
+    assert "✗" in result.stdout
+    assert "mapping.schema.json" in result.stdout
+
+
 def test_missing_source_database_exits_one_without_traceback(
     minimal_mapping_path, minimal_log_path, tmp_path, monkeypatch
 ):
@@ -556,6 +604,109 @@ def test_resolve_source_counts_covers_every_target_table(tmp_path):
         counts = _resolve_source_counts(reader, [("a", "res.partner"), ("b", "sale.order")])
 
     assert counts == {"a": 1, "b": 2}
+
+
+def _spy(con: sqlite3.Connection) -> tuple[list[str], object]:
+    """包一層轉接器，側錄每一條真正送進 SQLite 底層連線的 SQL。
+
+    跟 `tests/pipeline/test_source.py` 的同名輔助函式是同一套技術
+    （precedent：`test_count_issues_a_count_query_and_never_scans_rows`），
+    這裡沒有跨測試模組 import（本專案的 `tests/` 底下沒有 `__init__.py`，
+    跨模組 import 測試檔案不穩），照抄一份小型輔助函式比硬湊共用模組
+    划算。
+    """
+    seen: list[str] = []
+    real_execute = type(con).execute
+
+    class _ExecuteSpy:
+        def __init__(self, con: sqlite3.Connection) -> None:
+            self._con = con
+
+        def __getattr__(self, name: str):
+            return getattr(self._con, name)
+
+        def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+            seen.append(sql)
+            return real_execute(self._con, sql, *args)
+
+    return seen, _ExecuteSpy(con)
+
+
+def test_resolve_source_counts_issues_a_count_query_per_table_never_scans_rows(tmp_path):
+    """最終整分支審查 Critical C2：`_resolve_source_counts` 的 docstring
+    宣稱「唯一合法來源是 `SourceReader.count()`」，但既有測試
+    （`test_resolve_source_counts_uses_reader_count_not_migration_log` 等）
+    只斷言回傳值 `== {"cust": 3}`——把函式本體換成
+    `sum(1 for _ in reader.rows(table))` 這種**完全繞過 `count()`**的
+    等價實作，回傳值仍然是 3，測試照樣綠燈（`rows()` 掃描一樣數得出 3
+    筆）。若 `rows()`（或它牽動的任何轉換路徑）有缺陷少吐一列，分子
+    （`source_count`）跟分母沒對齊就會一起消失、報告全綠——正是計劃 2
+    那個 Critical 的形狀，而現有測試完全分辨不出「真的呼叫了 count()」
+    跟「用 rows() 算出剛好一樣的數字」這兩種實作。
+
+    改成側錄真正送進 SQLite 底層連線的 SQL（precedent：`tests/pipeline/
+    test_source.py` 的 `test_count_issues_a_count_query_and_never_scans_
+    rows`，同一種手法搬到 `_resolve_source_counts` 這一層）：對兩張表
+    各斷言恰好送出一條含 `COUNT(` 的資料查詢、零條 `SELECT *` 掃描查詢，
+    白名單檢查送的 `sqlite_master`／`PRAGMA` 查詢不算資料查詢，過濾掉。
+    """
+    db_path = tmp_path / "data.sqlite"
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute("CREATE TABLE a (id CHAR(4) NOT NULL, PRIMARY KEY (id))")
+        con.execute("CREATE TABLE b (id CHAR(4) NOT NULL, PRIMARY KEY (id))")
+        con.execute("INSERT INTO a VALUES ('A1')")
+        con.executemany("INSERT INTO b VALUES (?)", [("B1",), ("B2",)])
+        con.commit()
+
+    with SqliteSourceReader(db_path) as reader:
+        seen, reader._con = _spy(reader._con)
+        counts = _resolve_source_counts(reader, [("a", "res.partner"), ("b", "sale.order")])
+
+    assert counts == {"a": 1, "b": 2}
+
+    data = [sql for sql in seen if "sqlite_master" not in sql and not sql.startswith("PRAGMA")]
+    assert len(data) == 2, data  # 每張表恰好一條資料查詢，不多不少
+    for sql in data:
+        assert "COUNT(" in sql.upper(), data
+        assert "SELECT *" not in sql.upper().replace("  ", " "), data
+
+
+# --------------------------------------------------------------------------
+# 最終整分支審查 Important I3：`verify_command` 真的有呼叫 `resolve_
+# synthetic`，不是把它寫死成 `True`
+# --------------------------------------------------------------------------
+
+
+def test_verify_command_actually_calls_resolve_synthetic():
+    """`verify.resolve_synthetic` 這個純函式自己測得到（見
+    `tests/pipeline/test_verify.py`），但那證明不了 `verify_command`
+    真的有呼叫它——這正是 `resolve_synthetic` docstring 明講要修的形狀
+    （審查修正輪次 1 Critical C1／M41：`synthetic = True` 這種寫死不會被
+    任何測試發現）。抽成獨立函式之後，`verify_command` 這個呼叫端本身
+    仍然可能被悄悄改回 `synthetic = True`，而且沒有任何整合測試斷言過
+    `report["synthetic"]`——這是本專案已知失敗形狀 #5：修正只把邏輯搬進
+    可測的地方，沒有證明呼叫端還在呼叫它。
+
+    `synthetic` 是 D2 的合成資料標記：寫死 `True` 會把真實客戶的遷移
+    報告誤標成合成資料。這裡用 AST 靜態檢查 `verify_command` 的函式
+    本體（precedent：`tests/pipeline/test_loader.py` 的
+    `test_flush_batch_actually_calls_the_extracted_pure_functions`，
+    本專案已有多次同型 precedent），直接斷言原始碼裡真的有呼叫
+    `resolve_synthetic`——不吃 Odoo 連線，純靜態分析，不違反誠實界線。
+    """
+    source = inspect.getsource(cli_module)
+    tree = ast.parse(source)
+    verify_command_node = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "verify_command"
+    )
+    called_names = {
+        node.func.id
+        for node in ast.walk(verify_command_node)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "resolve_synthetic" in called_names
 
 
 def test_target_line_amount_actually_calls_build_external_id_prefix():

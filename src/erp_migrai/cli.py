@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from jsonschema import ValidationError
 
 from erp_migrai import __version__
 from erp_migrai.events import EventLog, Severity, Stage
@@ -33,7 +34,11 @@ from erp_migrai.mapping.catalog import CatalogError
 from erp_migrai.mapping.engine import MapFailed
 from erp_migrai.mapping.pipeline import InventoryReadError, InventoryValidationError, run_map
 from erp_migrai.mapping.rules_loader import RuleError
-from erp_migrai.mapping.writer import MappingSchemaError, MappingSerializationError
+from erp_migrai.mapping.writer import (
+    MappingSchemaError,
+    MappingSerializationError,
+    validate_mapping,
+)
 from erp_migrai.pipeline.loader import LogEntrySchemaError, run_load
 from erp_migrai.pipeline.odoo_client import OdooClient, OdooError
 from erp_migrai.pipeline.planner import build_external_id_module_prefix, build_external_id_prefix
@@ -305,6 +310,26 @@ def map_command(
         raise typer.Exit(code=1)
 
 
+def _mapping_schema_error_message(mapping_path: Path, exc: ValidationError) -> str:
+    """把讀 `--mapping` 得到的 `jsonschema.ValidationError` 轉成點名路徑的
+    中文訊息。
+
+    最終整分支審查 Important I1：`load`／`verify` 讀進 `--mapping` 之後
+    原本完全不驗 schema——四種壞輸入（`[1,2,3]`、`"hello"`、缺
+    `target_model`、缺 `source.table`）分別在 `plan_load`／`resolve_
+    target_counts` 等函式內部炸出 `TypeError`／`AttributeError`／
+    `KeyError` 的裸 traceback，使用者看不出「壞的是哪一筆」。
+    `mapping/writer.py` 已經有現成的 `validate_mapping`（`write_mapping`
+    寫出前必呼叫的同一顆 `_VALIDATOR`），這裡在讀進來那一側補上同樣的
+    守衛，兩處呼叫端共用同一份訊息格式。`exc.json_path` 是 JSONPath 形式
+    的位置（例如缺 `target_model` 時是 `$.models[0]`），比只印
+    `exc.message` 更容易讓使用者定位是哪一筆壞的。
+    """
+    return (
+        f"✗ --mapping {mapping_path} 不符合 mapping.schema.json（{exc.json_path}）：{exc.message}"
+    )
+
+
 def _resolve_password(*, password_stdin: bool) -> str:
     """密碼只從 `--password-stdin` 或 `MIGRAI_ODOO_PASSWORD` 讀（P3-2）。
 
@@ -423,6 +448,11 @@ def load_command(
             except json.JSONDecodeError as exc:
                 typer.echo(f"✗ --mapping {mapping} 不是合法的 JSON：{exc}")
                 raise typer.Exit(code=1) from exc
+            try:
+                validate_mapping(mapping_data)
+            except ValidationError as exc:
+                typer.echo(_mapping_schema_error_message(mapping, exc))
+                raise typer.Exit(code=1) from exc
 
             result = run_load(
                 mapping_data,
@@ -488,6 +518,18 @@ def _resolve_source_counts(
     就把地雷埋回去。抽成獨立、可以直接 import 測試的函式（precedent：
     `loader.run_load` 對 `_run_verify` 整段編排零測試這個同型缺陷的
     解法）。
+
+    🔴 最終整分支審查 Critical C2：上一段「簽章擋得住」的推理**只對「錯用
+    migration_log 當分母」這一種錯法成立**，對「錯用 `reader.rows()`
+    掃描計數」這種錯法完全無效——簽章一樣只吃 `reader`，`sum(1 for _ in
+    reader.rows(table))` 一樣能通過型別檢查，回傳值在既有測試的小夾具
+    （3 筆）上跟 `reader.count()` 算出來的數字**完全一樣**，光看回傳值
+    分辨不出兩種實作。真正擋住這條退路的是行為式測試（見
+    `tests/test_cli_verify.py` 的
+    `test_resolve_source_counts_issues_a_count_query_per_table_never_
+    scans_rows`）：側錄真正送進 SQLite 的 SQL，斷言每張表只送出一條含
+    `COUNT(` 的查詢、沒有任何一條 `SELECT *` 掃描——不是這段 docstring
+    本身能保證的事，這裡如實記錄「靠什麼測試守住」而不是靠函式簽章。
     """
     return {table: reader.count(table) for table, _ in targets}
 
@@ -724,6 +766,11 @@ def verify_command(
         mapping_data = json.loads(mapping_text)
     except json.JSONDecodeError as exc:
         typer.echo(f"✗ --mapping {mapping} 不是合法的 JSON：{exc}")
+        raise typer.Exit(code=1) from exc
+    try:
+        validate_mapping(mapping_data)
+    except ValidationError as exc:
+        typer.echo(_mapping_schema_error_message(mapping, exc))
         raise typer.Exit(code=1) from exc
 
     password = _resolve_password(password_stdin=password_stdin)
