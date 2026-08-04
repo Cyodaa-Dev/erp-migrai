@@ -7,46 +7,85 @@
 
 ## 現在就有
 
-開源核心目前提供兩個管線階段，透過 `migrai` 這支 CLI 執行：
+開源核心目前提供四個管線階段，透過 `migrai` 這支 CLI 執行：
 
 - **`migrai scan`** ——把 Genero 4GL 原始碼（與其 SQL schema）逆向工程成
   結構化的 `inventory.json`。
 - **`migrai map`** ——把 `inventory.json` 裡的欄位對應到 Odoo 17 CE 目標型錄，
   產出 `mapping.json` / `mapping.csv`。
+- **`migrai load`** ——把 `map` 產出的 `mapping.json` 實際寫入一個執行中的
+  Odoo 17 CE 環境（走 Odoo 內建的 `load()`），產出 `migration_log.jsonl`。
+- **`migrai verify`** ——在載入完成後，比對 Odoo 內的實際資料與來源資料庫
+  是否一致，找出載入過程中可能發生的遺漏或轉型錯誤，產出
+  `verification_report.json` / `.md`。
 
-兩者都可以用 `make demo` 對內建的合成語料實際跑一次，README 的示範輸出
-逐字受測試守衛（見 `tests/test_docs.py` 裡的 `test_make_demo_*` 與
-`test_readme_demo_output_matches_reality`）。
+`scan`／`map` 可以用 `make demo` 對內建的合成語料實際跑一次，README 的
+示範輸出逐字受測試守衛（見 `tests/test_docs.py` 裡的 `test_make_demo_*`
+與 `test_readme_demo_output_matches_reality`）。`load`／`verify` 是唯二
+會碰外部系統的階段，其正確性無法用靜態 golden 檔比對，只能靠「資料真的
+寫進 Odoo 之後查得出來」來驗證，這需要一個跑得起來的 Odoo 17 執行個體——
+本機沒有 Odoo 的貢獻者可以用 `--dry-run` 走完 `load` 讀取／轉換／排序／
+組 payload 的全部路徑而不連線；完整四段跑一次用 `make demo-full`（需要
+一台自己起的 Odoo 17 CE）。`pyproject.toml` 保留了 `integration`（需要
+docker Odoo）這個 pytest 標記、`make test` 預設會跳過它，CI 有一個
+`integration` job 對著一台真的 Odoo 17 CE 把 `scan → map → load →
+verify` 整套跑一遍——本地開發機不會、也不需要常態跑一個 Odoo 容器。
+
+🔴 **「現在就有」不等於「已在真實 T100 環境驗證過」**：`load`／`verify`
+目前只針對合成的 SQLite 來源（`corpus/` 底下的語料）建置與測試，尚無
+真實 T100 樣本可以拿來驗證這兩段對真實資料的行為（見 README 的語料聲明）。
+
+## 已知限制
+
+以下是已確認存在、但故意排到計劃 3（載入＋驗證）之後才處理的缺陷，
+先記在這裡而不是只留在任務報告裡，避免它們隨時間被遺忘。
+
+### `scan` 把 `RECORD LIKE tbl.*` 與下一句合併（parser 缺口）
+
+**重現方式**：
+
+```4gl
+FUNCTION f()
+    DEFINE p_deta RECORD LIKE ord_deta.*
+    DEFER INTERRUPT
+END FUNCTION
+```
+
+結果：`parse_status` 變成 `"failed"`、**這個函式的 `definitions` 是空的
+（定義遺失）**，`inventory.json` 裡多出一筆不支援語法紀錄，snippet 是
+合併後的 `'DEFINE p_deta RECORD LIKE ord_deta.* DEFER INTERRUPT'`，
+reason 寫「DEFINE 解析失敗：UnexpectedToken」——**這個 reason 怪錯了
+對象**，真正的成因不在 DEFINE 語句本身。
+
+**根因**：`src/erp_migrai/inventory/parser.py` 的 `_TRAILING_OPERATOR_
+OR_PUNCT` 把 `RECORD LIKE tbl.*` 結尾的那個 `*` 誤判成「乘號還沒打完」，
+於是把下一行接續進來當成同一句的延續。**只有後面接著一句 parser
+不認得的語句時才會觸發**——後面接合法的 `LET`／`SELECT` 之類語句時，
+`DEFINE` 與 SQL 都會被正確地各自記錄，不受影響。
+
+**嚴重度判定：Important，不是 Critical。** 它是「大聲失敗」而不是
+「悄悄產生錯的輸出」——`parse_status=failed`、多一筆不支援語法紀錄、
+snippet 完整顯示了合併後的內容，使用者看得出這裡有問題，只是查錯方向。
+這正是本專案「誠實回報 parser 做不到的事」這條原則要保護的最低限度：
+它沒有假裝自己解析成功。
+
+`RECORD LIKE tbl.*` 是標準且在真實 T100 程式裡極常見的 Genero 寫法，
+所以這個缺口值得優先處理，但範圍夠獨立，不需要卡在計劃 3 之內。
+
+**處置計畫**：計劃 3（載入＋驗證）合併之後另開一個小 PR 修正
+`_TRAILING_OPERATOR_OR_PUNCT` 的判斷條件，並補一個涵蓋這個語法形狀的
+`corpus` case，讓它有一個長期存在的回歸測試盯住，而不是只在這裡寫一段
+文字說明。
 
 ## 規劃中
 
-以下階段尚未實作。本 repo 裡不存在對應的子指令；提到它們時一律用描述性的
-說法（例如「載入階段」），不會寫成 `migrai <子指令>` 的形式，避免看起來像
-已經能跑。
-
-### 載入階段（ETL 進 Odoo 17）
-
-把 `map` 產出的 `mapping.json` 實際寫入一個執行中的 Odoo 17 CE 環境。
-
-這一項排在後面，是因為它的驗收方式跟 scan／map 不同：scan 與 map 的正確性
-可以用靜態的 golden 檔比對，但載入階段的正確性只能靠「資料真的寫進 Odoo
-之後查得出來」來驗證，這需要一個跑得起來的 Odoo 17 執行個體。目前
-`pyproject.toml` 已經先預留了 `integration`（需要 docker Odoo）這個 pytest
-標記、`make test` 預設會跳過它——這代表本地開發機不會、也不需要常態跑一個
-Odoo 容器。載入階段要能合入，前提是 CI 要先有一個可重複啟動的 Odoo service
-container 可供 `integration` 標記的測試連線；沒有那個容器，載入階段的正確性
-就沒有可信的驗收方式，寧可不做也不要做出一個測不到的功能。
-
-### 驗證階段
-
-在載入完成後，比對 Odoo 內的實際資料與 `mapping.json` 的宣稱是否一致，
-找出載入過程中可能發生的遺漏或轉型錯誤。
-
-這一項依賴載入階段先存在——沒有東西被載入，就沒有東西可驗證。
+以下能力尚未實作。本 repo 裡不存在對應的子指令；提到它們時一律用描述性的
+說法（例如「本機 Web 介面」），不會寫成 `migrai <子指令>` 的形式，避免看
+起來像已經能跑。
 
 ### 本機 Web 介面
 
-用瀏覽器操作 scan／map／（未來的）載入與驗證階段，取代目前純 CLI 的操作方式。
+用瀏覽器操作 scan／map／load／verify 四個階段，取代目前純 CLI 的操作方式。
 
 這一項依賴前面幾個階段的 CLI 介面先穩定下來——Web 介面本質上是這些階段的
 一層外殼，底層行為還在變動時先做外殼容易需要重寫。
