@@ -407,16 +407,25 @@ def load_command(
         typer.echo(f"✗ 無法寫入產出目錄 {out}：{exc}")
         raise typer.Exit(code=1) from exc
 
+    # Task 10 審查修正輪次 1 Important I5：E-4001 中止時（例如來源表沒有
+    # 主鍵）原本 stdout 仍然印綠勾，原因只寫進 events.jsonl——本機沒有
+    # Odoo 的貢獻者只有這個畫面可看，看到綠勾會誤以為真的成功了。這裡先
+    # 判斷這場執行有沒有致命事件，再決定印 ✓ 還是 ✗，中止時額外印出最後
+    # 一則致命事件的原因。
+    fatal_event = event_log.last_fatal(Stage.LOAD, strict=strict)
     counts = Counter(entry.action for entry in result.entries)
+    symbol = "✗" if fatal_event is not None else "✓"
     typer.echo(
-        f"✓ 載入完成：共 {len(result.entries)} 筆"
+        f"{symbol} 載入完成：共 {len(result.entries)} 筆"
         f"（created {counts['created']}、updated {counts['updated']}、"
         f"failed {counts['failed']}、skipped {counts['skipped']}）"
     )
+    if fatal_event is not None:
+        typer.echo(f"  原因：[{fatal_event['error_code']}] {fatal_event['message']}")
     typer.echo(f"  → {result.log_path}")
     typer.echo(f"  → {event_log.path}")
 
-    if event_log.has_fatal(Stage.LOAD, strict=strict):
+    if fatal_event is not None:
         raise typer.Exit(code=1)
 
 

@@ -5,6 +5,12 @@
 ⚠️ 誠實界線：這裡只測 `--dry-run`（不連 Odoo）與 CLI 本身的參數／錯誤處理
 （缺檔案、缺密碼、缺必要選項……）。「真的連上 Odoo 會怎樣」一律留給
 Task 12 的 CI 整合測試。
+
+**唯一的例外**（Task 10 審查修正輪次 1 Important I4）：密碼外洩測試指到
+`http://127.0.0.1:1`（loopback，沒有任何服務監聽，連線立刻被拒絕，不是
+「連上真 Odoo」）——目的不是驗證連線成功後的行為，是驗證連線**注定失敗**
+的路徑上密碼有沒有不小心被印出來或序列化進輸出檔案，這件事只有真的走到
+建構 `OdooClient` 並嘗試連線才測得到，純 `--dry-run` 覆蓋不到這條路徑。
 """
 
 from __future__ import annotations
@@ -140,10 +146,19 @@ def test_dry_run_does_not_require_odoo_credentials(
 
 
 def test_events_jsonl_lines_are_valid_json_and_share_run_id_with_migration_log(
-    minimal_mapping_path, minimal_source, tmp_path
+    transform_error_source, tmp_path
 ):
+    """審查修正輪次 1 Important I1：`migration_log.jsonl` 不帶時間戳的
+    整個設計建立在「用 `run_id` join `events.jsonl`」這個承諾上（Task
+    11／12 都要靠它）。原本這條測試用的是一個乾淨的 dry-run（不觸發任何
+    事件），`events == [] or all(...)` 在空集合上恆為真，`run_id` 從頭到
+    尾沒有被兩邊比對過一次（mutation：把 `run_id = event_log.run_id` 換
+    成常數字串，這條測試依然 GREEN）。這裡改用會觸發 E-4002 的 fixture，
+    確保 `events.jsonl` 真的非空，兩邊的 `run_id` 集合才有東西可比。
+    """
+    mapping_path, db_path = transform_error_source
     out = tmp_path / "out"
-    runner.invoke(app, _dry_run_args(minimal_mapping_path, minimal_source, out))
+    runner.invoke(app, _dry_run_args(mapping_path, db_path, out))
 
     log_entries = [
         json.loads(line)
@@ -152,12 +167,12 @@ def test_events_jsonl_lines_are_valid_json_and_share_run_id_with_migration_log(
     events = [
         json.loads(line) for line in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    # 乾淨的 dry-run 不觸發任何 E-40xx 事件，但 run_id 的 join 關係仍然要
-    # 能從 migration_log 這一側驗證——log_entries 至少有一筆，run_id 必須
-    # 是合法字串（不是空字串或 None）。
     assert log_entries
-    assert all(e["run_id"] for e in log_entries)
-    assert events == [] or all("run_id" in e for e in events)
+    assert events  # 這次真的觸發了 E-4002，不是空集合——見上方 docstring
+    log_run_ids = {e["run_id"] for e in log_entries}
+    event_run_ids = {e["run_id"] for e in events}
+    assert log_run_ids == event_run_ids
+    assert len(log_run_ids) == 1
 
 
 def test_rerunning_does_not_duplicate_migration_log(minimal_mapping_path, minimal_source, tmp_path):
@@ -219,6 +234,13 @@ def test_missing_password_without_dry_run_exits_nonzero_with_clear_message(
 def test_missing_odoo_connection_info_without_dry_run_exits_one(
     minimal_mapping_path, minimal_source, tmp_path, monkeypatch
 ):
+    """審查修正輪次 1 Minor M2：`urlparse(None)` 不拋例外，所以就算把
+    `if missing:` 這個檢查整個關掉（mutation：`if False:`），`_endpoint()`
+    仍然會因為 `odoo_url=None` 拋 `OdooError`，全部記錄一樣 failed、一樣
+    exit 1、一樣沒有 Traceback——這條測試原本只驗證這三件事，通過了但
+    守的不是它宣稱的東西（Task 6 撞過的形狀）。加一條斷言指名訊息真的
+    點出 `--odoo-url`，才能分辨「真的被這個檢查擋下」與「繞過檢查、
+    在別的地方碰巧也失敗」。"""
     monkeypatch.setenv("MIGRAI_ODOO_PASSWORD", "s3cret")
     out = tmp_path / "out"
     result = runner.invoke(
@@ -237,6 +259,7 @@ def test_missing_odoo_connection_info_without_dry_run_exits_one(
     )
     assert result.exit_code == 1
     assert "Traceback" not in result.stdout
+    assert "--odoo-url" in result.stdout
 
 
 # --------------------------------------------------------------------------
@@ -309,10 +332,14 @@ def test_missing_required_option_exits_two():
 # --------------------------------------------------------------------------
 
 
-def test_transform_error_in_dry_run_still_exits_one(tmp_path):
-    """`dry_run` 不會壓下 E-4002：轉換失敗是資料本身的問題，跟有沒有連
-    Odoo 無關，`--dry-run` 存在的目的正是要讓貢獻者能在本機發現這種
-    問題。"""
+@pytest.fixture
+def transform_error_source(tmp_path):
+    """一份會觸發 E-4002 的最小來源＋mapping：`flag` 欄位的值 `'X'` 不在
+    `value_map` 裡也沒有 `default`。同時被
+    `test_transform_error_in_dry_run_still_exits_one`（純粹驗證 E-4002
+    契約）與 I1 的 `run_id` join 測試（需要至少一則事件才能驗證 join
+    關係，見該測試 docstring）共用，避免兩處各自維護一份幾乎相同的
+    fixture。"""
     db_path = tmp_path / "data.sqlite"
     with closing(sqlite3.connect(db_path)) as con:
         con.execute("CREATE TABLE cust (id CHAR(4) NOT NULL, flag CHAR(1), PRIMARY KEY (id))")
@@ -341,6 +368,14 @@ def test_transform_error_in_dry_run_still_exits_one(tmp_path):
     }
     mapping_path = tmp_path / "mapping.json"
     mapping_path.write_text(json.dumps(mapping), encoding="utf-8")
+    return mapping_path, db_path
+
+
+def test_transform_error_in_dry_run_still_exits_one(transform_error_source, tmp_path):
+    """`dry_run` 不會壓下 E-4002：轉換失敗是資料本身的問題，跟有沒有連
+    Odoo 無關，`--dry-run` 存在的目的正是要讓貢獻者能在本機發現這種
+    問題。"""
+    mapping_path, db_path = transform_error_source
     out = tmp_path / "out"
 
     result = runner.invoke(app, _dry_run_args(mapping_path, db_path, out))
@@ -435,11 +470,122 @@ def test_dry_run_produces_migration_log_without_touching_odoo(case03_source, cor
     tables = [e["source_table"] for e in entries]
     assert tables.index("cust_mast") < tables.index("ord_mast")
     # reference 真的被解析成 external_id。
+    #
+    # 審查修正輪次 1 Important I3：任務書 Step 3 原本給的斷言是
+    # `.startswith("migrai.")`——任何 `--source-id` 都能通過，`--source-id`
+    # 打錯字（Odoo 那邊會全部落在錯誤的 external_id 底下，重跑不會變成
+    # update 而是全部新建一份重複資料，只有真 Odoo 才看得出來）不會被這
+    # 條測試發現（mutation：`source_id="fixed"` 寫死，這條測試依然
+    # GREEN）。這裡改成比對完整字串，把 `--source-id="case03"` 真的有沒
+    # 有被用上釘死。
     ord_entry = next(e for e in entries if e["source_table"] == "ord_mast")
-    assert ord_entry["external_id"].startswith("migrai.")
+    assert ord_entry["external_id"] == "migrai.case03.ord_mast.O0001"
 
     # spec §4：case03 的 .4gl 刻意含不支援語法（scan 的 inventory.json 會有
     # unsupported_syntax），但資料遷移吃的是 schema.sql／data.sqlite，這裡
     # 一路仍然全綠——兩件事同時成立正是這條測試要證明的行為。
     inventory = json.loads((out / "inventory.json").read_text(encoding="utf-8"))
     assert inventory["unsupported_syntax"]
+
+
+# --------------------------------------------------------------------------
+# 審查修正輪次 1 Important I4：密碼不能外洩到 stdout／events.jsonl／
+# migration_log.jsonl
+# --------------------------------------------------------------------------
+
+
+def test_password_env_var_never_leaks_and_is_actually_read(
+    minimal_mapping_path, minimal_source, tmp_path, monkeypatch
+):
+    """現況實作是乾淨的（`--help` 無 `--password `、`OdooClient` 沒被序列化
+    進事件），但這件事原本沒有任何測試守衛——`odoo_client.py` 的
+    docstring 已經明講「未封住、呼叫端自己要避開」的路徑就是「把整個
+    `OdooClient` 序列化進事件或 log」，`migrai load` 正是那個呼叫端。
+
+    `--odoo-url http://127.0.0.1:1` 是 loopback 且沒有服務監聽，連線必定
+    立刻被拒絕——不是在測「連上真 Odoo 會怎樣」，是測「連線注定失敗的
+    這條路徑上，密碼有沒有不小心流進使用者看得到或寫進磁碟的地方」。
+
+    順便守住 I4 的第二部分：`MIGRAI_ODOO_PASSWORD` 這個環境變數名稱真的
+    有被讀取——如果它被忽略（例如改名後沒改對應的讀取邏輯），程式會停在
+    「未提供密碼」那個分支，走不到真正嘗試連線、進而失敗的分支。
+    """
+    secret = "sup3rs3cret"  # noqa: S105 - 測試用假密碼，不是真的密鑰
+    monkeypatch.setenv("MIGRAI_ODOO_PASSWORD", secret)
+    out = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "load",
+            "--mapping",
+            str(minimal_mapping_path),
+            "--source",
+            str(minimal_source),
+            "--source-id",
+            "t1",
+            "--odoo-url",
+            "http://127.0.0.1:1",
+            "--odoo-db",
+            "migrai",
+            "--odoo-user",
+            "admin",
+            "--out",
+            str(out),
+        ],
+    )
+
+    assert secret not in result.stdout
+    # 若「未提供密碼」，代表 MIGRAI_ODOO_PASSWORD 根本沒被讀到，走到了
+    # 錯的分支——而不是真的嘗試連線後失敗。
+    assert "未提供密碼" not in result.stdout
+    assert result.exit_code == 1
+
+    events_text = (out / "events.jsonl").read_text(encoding="utf-8")
+    assert secret not in events_text
+
+    log_path = out / "migration_log.jsonl"
+    if log_path.is_file():
+        assert secret not in log_path.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# 審查修正輪次 1 Important I5／I9：E-4001 中止時 stdout 不能仍然印綠勾，
+# 且 UnsupportedReference 不能逃出去變成裸例外
+# --------------------------------------------------------------------------
+
+
+def test_e4001_abort_prints_failure_symbol_and_names_the_reason(tmp_path):
+    """實跑證據：來源表沒有主鍵 → `UnsupportedReference` → E-4001 中止，
+    但原本 stdout 仍然印 `✓ 載入完成：共 0 筆（...）`，原因只寫在
+    `events.jsonl` 裡——本機沒有 Odoo 的貢獻者只看得到這個畫面，看到綠勾
+    會誤以為真的成功了（`cli.scan`／`cli.map` 失敗時都印 ✗，只有
+    `load` 沒有）。
+
+    同時這個「沒有主鍵的表」場景也驗證了 I9：`UnsupportedReference` 是
+    `Exception` 的直接子類（不是 `ValueError`），CLI 的
+    `except (LogEntrySchemaError, ValueError)` 接不住——`run_load` 自己
+    要把它收斂住，不能讓它逃出去變成使用者看到的裸 Traceback。
+    """
+    db_path = tmp_path / "data.sqlite"
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute("CREATE TABLE cust (id CHAR(4), name CHAR(20))")  # 刻意無 PRIMARY KEY
+        con.execute("INSERT INTO cust VALUES ('C001', 'Alice')")
+        con.commit()
+    out = tmp_path / "out"
+    mapping_path = tmp_path / "mapping.json"
+    mapping_path.write_text(json.dumps(_MINIMAL_MAPPING), encoding="utf-8")
+
+    result = runner.invoke(app, _dry_run_args(mapping_path, db_path, out))
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stdout
+    assert "✗" in result.stdout
+    assert "✓ 載入完成" not in result.stdout
+    assert "cust" in result.stdout  # 原因裡點名是哪張表
+
+    events = [
+        json.loads(line) for line in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(e["error_code"] == "E-4001" for e in events)
+    assert (out / "migration_log.jsonl").read_text(encoding="utf-8") == ""

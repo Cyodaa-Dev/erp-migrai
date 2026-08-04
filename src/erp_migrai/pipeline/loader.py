@@ -58,7 +58,7 @@ from jsonschema import Draft202012Validator, ValidationError
 
 from erp_migrai.events import E_4001, E_4002, E_4003, E_4004, E_4005, EventLog
 from erp_migrai.pipeline.models import LogEntry
-from erp_migrai.pipeline.odoo_client import OdooClient, OdooError, RateLimited
+from erp_migrai.pipeline.odoo_client import OdooAuthError, OdooClient, OdooError, RateLimited
 from erp_migrai.pipeline.planner import (
     CyclicReference,
     TablePlan,
@@ -220,6 +220,26 @@ def _failed_entry(
     )
 
 
+def _row_value(row: dict[str, Any], column: str, *, where: str) -> Any:
+    """直接索引 `row[column]`，缺欄位時轉成點名 `where` 的 `TransformError`
+    （precedent：`transform.py` 的 `_require_key`）。
+
+    這是**縱深防禦**，不是主要防線：主要防線是 `run_load` 進主迴圈前
+    用 `reader.columns()` 對 `table_plan.columns` 做的整表比對
+    （`_missing_source_columns`）——`--mapping` 與 `--source` 是兩個獨立
+    的 CLI 參數，沒有機制保證配對，那一層已經能一次擋下「mapping 提到的
+    欄位在來源資料庫不存在」這個最常見的形狀。但這一層不能只靠上游
+    守住：`SourceReader` 是這個專案自己定義的介面，不保證每個實作（含
+    未來的商業版讀取器）在 `rows()` 裡吐出的每一列都恰好含有
+    `columns()` 回報過的每一個欄位——裸 `KeyError` 逃出去會是使用者
+    直接看到的 traceback（Task 10 審查修正輪次 1 Critical C1）。
+    """
+    try:
+        return row[column]
+    except KeyError:
+        raise TransformError(f"{where}：來源列缺少欄位 {column!r}") from None
+
+
 def _decide_row(
     row: dict[str, Any],
     table_plan: TablePlan,
@@ -244,7 +264,32 @@ def _decide_row(
     先後順序，超出這次的範圍（見報告「刻意沒做的事」）。
     """
     table = table_plan.source_table
-    pk_values = [row[c] for c in pk_cols]
+    try:
+        pk_values = [_row_value(row, c, where=table) for c in pk_cols]
+    except TransformError as exc:
+        # 縱深防禦命中：連主鍵欄位本身都缺席，組不出任何有意義的
+        # external_id／source_pk（`LogEntry` 要求 `source_pk` 非空）。
+        # 這條理論上到不了（`pk_cols` 來自 `reader.primary_key(table)`，
+        # 保證是這張表真實存在的欄位；主要防線也已經在 run_load 進主
+        # 迴圈前擋過一次），用固定占位字串充當診斷用途，這筆本來就到
+        # 不了 Odoo。
+        message = f"{exc}，此筆不會被載入"
+        event_log.emit(
+            "load.transform_error",
+            code=E_4002,
+            message=message,
+            details={"source_table": table},
+        )
+        external_id = f"migrai.{source_id}.{table}.ERROR"
+        problem_external_ids.add(external_id)
+        return _failed_entry(
+            run_id=run_id,
+            table=table,
+            source_pk=("ERROR",),
+            external_id=external_id,
+            target_model=table_plan.target_model,
+            message=message,
+        )
     source_pk = tuple(str(v) for v in pk_values)
 
     try:
@@ -275,8 +320,8 @@ def _decide_row(
     values_row: list[str] = []
     transform_error: TransformError | None = None
     for col in table_plan.columns:
-        raw_value = row[col.source_column]
         try:
+            raw_value = _row_value(row, col.source_column, where=f"{table}.{col.source_column}")
             value = apply_transform(
                 col.transform, raw_value, source_id=source_id, where=f"{table}.{col.source_column}"
             )
@@ -418,6 +463,93 @@ def _on_rate_limit(event_log: EventLog, *, table: str, mode: str) -> Callable[[i
     return _handler
 
 
+# ---------------------------------------------------------------------------
+# 純函式：created／updated 決策與批次結果判讀
+#
+# 這三個函式的存在理由是 Task 10 審查修正輪次 1 Important I6：`_flush_
+# batch`／`_flush_individually` 唯一的職責是呼叫 `client.execute_kw()`
+# （誠實界線之外，見模組頂部與 `tests/pipeline/test_loader.py` docstring），
+# 但「拿到 Odoo 已經回應的 ids／existing 之後該怎麼分類每一列」是純本地
+# 邏輯，不需要 Odoo 存在——被埋在呼叫 execute_kw 的函式內聯迴圈裡，是
+# 結構問題，不是誠實界線問題（precedent：`_merge_decisions` 就是為了
+# 可測性才從 `run_load` 內聯迴圈抽出來的）。抽出來之後，
+# `_flush_batch`／`_flush_individually` 剩下的就只是「呼叫 execute_kw
+# 並把回傳值交給這幾個純函式」，那部分才是真的留給 Task 12 的範圍。
+# ---------------------------------------------------------------------------
+
+
+def _action_for(name_without_prefix: str, existing: set[str]) -> str:
+    """單一記錄該標 `created` 還是 `updated`。
+
+    `existing` 是 `_existing_external_id_names` 查到的、這批裡已經存在於
+    Odoo 的 name 集合——這裡只讀不寫，純函式。
+    """
+    return "updated" if name_without_prefix in existing else "created"
+
+
+def _entries_from_ids(
+    pending: list[_PendingRow],
+    ids: list[Any],
+    existing: set[str],
+    *,
+    table_plan: TablePlan,
+    run_id: str,
+) -> list[LogEntry]:
+    """把 Odoo `load()` 回傳的 `ids`（依 `pending` 的順序一一對應，
+    `_batch_outcome` 已經確認過兩者長度相等）轉成一批 `LogEntry`。
+
+    純函式：`ids`／`existing` 都是呼叫端已經拿到（或測試手工建構）的
+    資料，不是假扮 Odoo 回話（precedent：`_first_error_message` 手工建構
+    `messages` payload 餵給純函式的測法）。`zip(..., strict=True)` 是
+    最後一道防線——長度不符本來就該在呼叫 `_batch_outcome` 那一步被擋下，
+    這裡用 `strict=True` 確保萬一沒被擋下也不會安靜地錯位配對。
+    """
+    entries: list[LogEntry] = []
+    for item, odoo_id in zip(pending, ids, strict=True):
+        entries.append(
+            LogEntry(
+                run_id=run_id,
+                source_table=table_plan.source_table,
+                source_pk=item.source_pk,
+                external_id=item.external_id,
+                target_model=table_plan.target_model,
+                action=_action_for(item.name_without_prefix, existing),
+                odoo_id=odoo_id,
+                error_code=None,
+                message="",
+            )
+        )
+    return entries
+
+
+def _batch_outcome(result: Any, *, expected_count: int) -> tuple[bool, str]:
+    """判斷整批 `load()` 的回傳值算成功還是失敗，回傳
+    `(成功?, 失敗理由)`（成功時第二個值是空字串）。
+
+    純函式：`result` 是 `load()` 已經回傳（或測試手工建構）的
+    `{ids, messages}` 形狀 payload，不是假扮 Odoo 回話。
+
+    兩種失敗各自給出不同訊息，方便 `_degrade` 的 E-4004 事件點名原因：
+
+    - `ids` 是 falsy（`False`、`None`、空 list……）：模組 docstring 記錄
+      的 Odoo `load()` 行為——一批裡只要有一筆錯，`ids` 整個回傳
+      `False`，不是「這幾筆成功、那幾筆失敗」的部分結果。
+    - `ids` 長度與 `expected_count`（送出的列數）不符：Odoo 的逐筆重試
+      迴圈在 `psycopg2.Warning` 分支只 append `messages`、不 append
+      `ids`、也不算進 `errors`，導致 `ids` 是一個比輸入短、但仍是
+      truthy 的 list（Task 10 審查修正輪次 1 Important I7）——這裡在
+      呼叫端動手 `zip(..., strict=True)` 之前就先擋下，讓使用者看到的
+      是清楚點名數字對不上的 E-4004，而不是一個毫無資訊量的
+      `ValueError: zip() argument 2 is shorter than argument 1`。
+    """
+    ids = result.get("ids") if isinstance(result, dict) else None
+    if not ids:
+        return False, "Odoo 拒絕整批寫入"
+    if len(ids) != expected_count:
+        return False, f"Odoo 回傳的 id 數量（{len(ids)}）與送出的列數（{expected_count}）不符"
+    return True, ""
+
+
 def _flush_individually(
     pending: list[_PendingRow],
     table_plan: TablePlan,
@@ -499,7 +631,7 @@ def _flush_individually(
             continue
 
         odoo_id = ids[0]
-        action = "updated" if item.name_without_prefix in existing else "created"
+        action = _action_for(item.name_without_prefix, existing)
         entries.append(
             LogEntry(
                 run_id=run_id,
@@ -586,7 +718,7 @@ def _flush_batch(
     def _call() -> Any:
         return client.execute_kw(table_plan.target_model, "load", [field_names, data_matrix])
 
-    def _degrade(reason: str) -> list[LogEntry]:
+    def _degrade(reason: str, *, individual_attempts: int = attempts) -> list[LogEntry]:
         event_log.emit(
             "load.batch_retry",
             code=E_4004,
@@ -600,9 +732,30 @@ def _flush_batch(
             existing=existing,
             run_id=run_id,
             event_log=event_log,
-            attempts=attempts,
+            attempts=individual_attempts,
             sleep=sleep,
         )
+
+    def _batch_failed_entries(message: str) -> list[LogEntry]:
+        """整批直接標成失敗，不降級逐筆——目前只有 `OdooAuthError` 會走
+        這條（見下方 `except OdooAuthError` 分支的理由）。"""
+        _emit_load_failed(
+            event_log, table=table_plan.source_table, external_id="(batch)", message=message
+        )
+        return [
+            LogEntry(
+                run_id=run_id,
+                source_table=table_plan.source_table,
+                source_pk=item.source_pk,
+                external_id=item.external_id,
+                target_model=table_plan.target_model,
+                action="failed",
+                odoo_id=None,
+                error_code="E-4003",
+                message=message,
+            )
+            for item in pending
+        ]
 
     try:
         result = retry_with_backoff(
@@ -611,30 +764,29 @@ def _flush_batch(
             sleep=sleep,
             on_rate_limit=_on_rate_limit(event_log, table=table_plan.source_table, mode="批次載入"),
         )
+    except OdooAuthError as exc:
+        # M4：`OdooAuthError` 與 `RateLimited` 都是 `OdooError` 子類，一視
+        # 同仁降級逐筆的話，認證失敗（帳密錯、資料庫不存在）不會因為
+        # 換成逐筆呼叫就變好——100 筆的批次會變成 100 次注定失敗的無用
+        # RPC。認證問題整批直接標成失敗，不進 `_flush_individually`。
+        return _batch_failed_entries(f"Odoo 認證失敗：{exc}")
+    except RateLimited as exc:
+        # M4：整批呼叫在走到這裡之前，`retry_with_backoff` 已經照
+        # `attempts` 次指數退避重試過一輪（`attempts=5` 時 ≈ 1+2+4+8=15
+        # 秒）才會讓 `RateLimited` 逃出來——若降級逐筆時每一筆都重新給滿
+        # `attempts`，退避時間會被放大 `len(pending)` 倍（100 筆 ×
+        # 15 秒 ≈ 25 分鐘）。已經知道 Odoo 現在在限流，逐筆改成只嘗試
+        # 一次（不再重新退避），讓這筆盡快標成失敗，而不是重複等待。
+        return _degrade(str(exc), individual_attempts=1)
     except OdooError as exc:
         return _degrade(str(exc))
 
-    ids = result.get("ids") if isinstance(result, dict) else None
-    if not ids:
-        return _degrade("Odoo 拒絕整批寫入")
+    ok, reason = _batch_outcome(result, expected_count=len(pending))
+    if not ok:
+        return _degrade(reason)
 
-    entries: list[LogEntry] = []
-    for item, odoo_id in zip(pending, ids, strict=True):
-        action = "updated" if item.name_without_prefix in existing else "created"
-        entries.append(
-            LogEntry(
-                run_id=run_id,
-                source_table=table_plan.source_table,
-                source_pk=item.source_pk,
-                external_id=item.external_id,
-                target_model=table_plan.target_model,
-                action=action,
-                odoo_id=odoo_id,
-                error_code=None,
-                message="",
-            )
-        )
-    return entries
+    ids = result["ids"] if isinstance(result, dict) else []
+    return _entries_from_ids(pending, ids, existing, table_plan=table_plan, run_id=run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +829,34 @@ def _merge_decisions(
     """
     pending_iter = iter(pending_entries)
     return [next(pending_iter) if isinstance(d, _PendingRow) else d for d in decisions]
+
+
+def _missing_source_columns(plans: list[TablePlan], reader: SourceReader) -> list[str]:
+    """檢查 `mapping.json` 點名的來源欄位是不是真的存在於來源資料庫。
+
+    `--mapping` 與 `--source` 是兩個獨立的 CLI 參數，沒有任何機制保證
+    兩者配對（過期的 mapping、手改過的 mapping、或誤用另一個 case 的
+    來源資料庫都會造成這裡對不上）——這是 Task 10 審查修正輪次 1
+    Critical C1 的主要防線：在進主迴圈、對任何一列資料動手之前，一次
+    比對完所有表的所有欄位，而不是跑到第一列才踩到裸 `KeyError`。
+
+    只比對 `table_plan.columns`（來自 `mapping.json` 的
+    `mappings[*].source.column`），不比對 `pk_cols`——後者恆為
+    `reader.primary_key(table)` 現場查出來的結果，定義上一定是這張表
+    真實存在的欄位，不需要另外驗證。
+
+    回傳缺欄位的完整清單（`"table.column"` 形式，跨所有表），讓呼叫端
+    一次講完，不是每次只點名第一個。純函式（`reader.columns()` 是查詢
+    但不修改狀態，precedent：這個模組其餘「唯讀查詢」一律不算破壞誠實
+    界線，見 `_existing_external_id_names`）。
+    """
+    missing: list[str] = []
+    for table_plan in plans:
+        available = set(reader.columns(table_plan.source_table))
+        for col in table_plan.columns:
+            if col.source_column not in available:
+                missing.append(f"{table_plan.source_table}.{col.source_column}")
+    return missing
 
 
 @dataclass(frozen=True)
@@ -742,6 +922,16 @@ def run_load(
         return LoadResult(log_path=writer.path, entries=())
 
     try:
+        missing_columns = _missing_source_columns(plans, reader)
+        if missing_columns:
+            message = (
+                "mapping.json 提到 "
+                + "、".join(missing_columns)
+                + "，但來源資料庫沒有這些欄位——mapping 與 source 可能不是同一次 scan 的產物"
+            )
+            event_log.emit("load.extraction_failed", code=E_4001, message=message)
+            return LoadResult(log_path=writer.path, entries=tuple(entries))
+
         for table_plan in plans:
             pk_cols = reader.primary_key(table_plan.source_table)
             for row_chunk in _iter_chunks(reader.rows(table_plan.source_table), batch_size):

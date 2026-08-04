@@ -139,18 +139,33 @@ class EventLog:
 
     def has_fatal(self, stage: Stage, *, strict: bool = False) -> bool:
         """該階段是否出現足以決定非零 exit code 的錯誤。"""
+        return self.last_fatal(stage, strict=strict) is not None
+
+    def last_fatal(self, stage: Stage, *, strict: bool = False) -> dict[str, Any] | None:
+        """跟 `has_fatal` 同一套判準，但回傳觸發判定的**最後一則事件**
+        （不是布林值）——CLI 在該階段中止時要能點名「最後、最直接」的
+        致命原因印給使用者看（precedent：Task 10 審查修正輪次 1
+        Important I5：`migrai load` 中止時 stdout 原本仍印綠勾，原因只
+        寫進 `events.jsonl`，本機沒有 Odoo 的貢獻者看不到）。
+
+        跟 `has_fatal` 共用同一套 `FATAL_CODES`／`strict` 判準（而不是讓
+        呼叫端在 `cli.py` 自己重複一份），確保兩者的判定結果永遠一致：
+        `has_fatal` 回傳 `True` 若且唯若 `last_fatal` 非 `None`。
+        """
         fatal = FATAL_CODES[stage]
+        last: dict[str, Any] | None = None
         for event in self.events:
             code = event["error_code"]
             if code is None:
                 continue
             if code in fatal:
-                return True
+                last = event
+                continue
             # 直接索引 ERROR_CODES[code] 是安全的，因為 emit() 已保證任何
             # 存入事件的錯誤碼都在規範表內且欄位相符。
             if strict and ERROR_CODES[code].severity in (
                 Severity.ERROR,
                 Severity.CRITICAL,
             ):
-                return True
-        return False
+                last = event
+        return last
