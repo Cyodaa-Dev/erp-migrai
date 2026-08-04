@@ -20,26 +20,40 @@ Task 10／11 `loader.py` 的責任，理由是唯有在那一層才知道「這�
   （後者固定是通用字串 `"Odoo Server Error"`，見 `odoo/http.py` 的
   `handle_error()`／`serialize_exception()`）。
 
-## 密碼絕不外洩——這裡列出每一條被想到並封住的路徑
+## 密碼外洩：已封住的路徑，以及呼叫端自己要避開的路徑
 
-1. **`repr(OdooClient(...))`**：`password` 欄位標了
-   `field(repr=False)`，dataclass 自動產生的 `__repr__` 就不會印出它。
-   單靠「例外訊息裡沒有密碼」守不住這條——`repr()` 是完全獨立的另一扇門
-   （任何 `logging.debug("client=%s", client)` 都會經過它）。
+**已封住**：
+
+1. **`repr(OdooClient(...))`／`"%s" % client`**（走 `__repr__`）：`password`
+   欄位標了 `field(repr=False)`，dataclass 自動產生的 `__repr__` 就不會
+   印出它。單靠「例外訊息裡沒有密碼」守不住這條——`repr()` 是完全獨立的
+   另一扇門（任何 `logging.debug("client=%s", client)` 都會經過它）。
 2. **`_raise_for_error`／`_extract_uid` 的例外訊息**：只組進 Odoo 給的
    `data.message`／`error.message`，絕不把整包 `error` 或 `body` 塞進訊息
    ——`error["data"]["debug"]` 是伺服器端完整 traceback，混進去的話不只
    洩漏敏感細節，還會把一大段伺服器內部堆疊倒進使用者終端與 CI 日誌。
-3. **HTTP 層的例外轉換（`_send`）**：`urllib.error.HTTPError`／`URLError`
-   轉成 `OdooError` 時，只取 `exc.code`／`exc.reason`（HTTP 狀態碼與
-   reason phrase，兩者都由伺服器/連線層決定，不含請求內容），刻意不呼叫
-   `exc.read()`——那是伺服器回應本文，是否會回顯請求內容不確定，不冒
-   這個風險；也絕不把 `payload`（含密碼）本身塞進任何例外訊息。
-4. **`payload` 字典本身**：正常路徑本來就含密碼（`object.execute_kw`
-   的 args 第三個位置），這是協定要求、不是洩漏——洩漏指的是密碼跑進
-   「人會看到」的地方（例外訊息、log、repr），而不是跑進「送給 Odoo
-   的封包」這個本來就該有密碼的地方。這裡沒有任何地方對 `payload`
-   呼叫 `repr()`／`str()` 再塞進例外或 log。
+3. **HTTP 層的例外轉換（`_send`／`_map_connection_error`）**：
+   `urllib.error.HTTPError`／`URLError` 轉成 `OdooError` 時，只取
+   `exc.code`／`exc.reason`（HTTP 狀態碼與 reason phrase，兩者都由
+   伺服器/連線層決定，不含請求內容），刻意不呼叫 `exc.read()`——那是
+   伺服器回應本文，是否會回顯請求內容不確定，不冒這個風險；也絕不把
+   `payload`（含密碼）本身塞進任何例外訊息。
+
+**未封住、呼叫端自己要避開**：`dataclasses.asdict(client)`／
+`astuple(client)`／`vars(client)`／`client.__dict__`——這幾條路徑都繞過
+`__repr__`，密碼會原樣出現在回傳的 dict／tuple 裡。**尤其是
+`json.dumps(dataclasses.asdict(client))`**：把整個 `OdooClient` 序列化進
+`events.jsonl` 或任何 log，是這個 codebase 最可能踩到這條的地方——
+**不要把 `OdooClient` 整個序列化進事件或 log，只序列化你需要的欄位**
+（例如 `client.url`）。
+
+刻意不用 `Secret(str)` 之類的包裝類別封住 `password` 欄位：那種包裝只
+封得住 `repr()` 這一條路，`json.dumps(dataclasses.asdict(client))` 照樣會
+把底層字串明文吐出來——包一層會製造「密碼已經安全」的錯覺，而真正的
+風險路徑（`json.dumps`）完全沒被封住，這是假的安心，比不包更危險。
+真正的防線是**呼叫端的紀律**（不要把整個 client 物件序列化），這份
+docstring 就是那個紀律的文件化，不是「每條路徑都已經被想到並封住」的
+宣稱。
 """
 
 from __future__ import annotations
@@ -49,6 +63,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 
 class OdooError(Exception):
@@ -65,6 +80,9 @@ class RateLimited(OdooError):
 
 @dataclass
 class OdooClient:
+    # base URL，例如 "http://localhost:8069"——**這是 base URL，不是完整
+    # 端點，不要自己接 /jsonrpc**：`_endpoint()` 會處理這件事，這是全
+    # repo 唯一定義這個欄位語意的地方。
     url: str
     db: str
     user: str
@@ -73,6 +91,12 @@ class OdooClient:
     # 帶上 client 本身、REPL、debugger）都會把密碼原樣洩漏出去。這不是
     # 「例外訊息裡沒有密碼」那條測試守得住的範圍——repr() 是另一扇門。
     password: str = field(repr=False)
+    # 單次 HTTP 呼叫的逾時秒數（單位：秒）。urlopen 預設
+    # timeout=socket._GLOBAL_DEFAULT_TIMEOUT，也就是永不逾時——Odoo
+    # 半死不活（TCP 連得上、應用層不回）時 _send 會無限期掛住。這不是
+    # 重試／退避邏輯：它是單次呼叫的參數，不牽涉「這批要不要整批重試」
+    # 「退避幾秒」這種跨多次呼叫的狀態，落在本模組的責任範圍內。
+    timeout: float = 30.0
     # 認證後快取的 uid：execute_kw() 需要 uid 才能組封包，但介面本身
     # （見任務書）不讓呼叫端每次都手動傳 uid，因此第一次呼叫
     # execute_kw() 時若還沒認證過，就地呼叫一次 authenticate()。
@@ -144,7 +168,7 @@ class OdooClient:
     # ------------------------------------------------------------------
 
     def _raise_for_error(self, body: dict[str, Any]) -> None:
-        """JSON-RPC 回應含 `error` 鍵時拋 `OdooError`；否則什麼都不做。
+        """JSON-RPC 回應含 `error` 鍵時拋例外；否則什麼都不做。
 
         真正的訊息在 `error["data"]["message"]`，不是 `error["message"]`
         ——後者固定是 `"Odoo Server Error"` 這種通用字串（見
@@ -152,19 +176,58 @@ class OdooClient:
         `data["message"]` 缺席時退回 `error["message"]`，兩者都缺席時
         用固定的通用訊息——**不能讓 `KeyError` 從這裡漏出去**，那會把
         「Odoo 到底回了什麼錯」這個問題換成一個更難懂的
-        「我們自己的程式碼哪裡壞了」。
+        「我們自己的程式碼哪裡壞了」。真實 Odoo 回應通常兩個鍵都有
+        （`data.message` 才是真訊息），優先序寫反的話每一則錯誤都會
+        退化成固定字串 `"Odoo Server Error"`，這裡的順序不能鬆動。
 
         刻意只組進 `data.message`／`error.message` 這兩個字串欄位，絕不
         把整包 `error`／`data` 塞進例外訊息——`data.debug` 是伺服器端的
         完整 traceback，混進去等於把一大段伺服器內部堆疊倒進使用者
         終端與 CI 日誌。
+
+        `error`／`data` 若不是 dict（協定被破壞，理論上不該發生但不能
+        假設一定不發生），一律當空處理，不能讓 `AttributeError` 從這裡
+        漏出去。
+
+        `data["name"]` 以 `"AccessDenied"` 結尾時拋 `OdooAuthError` 而
+        不是普通 `OdooError`：`execute_kw` 每次 dispatch 都會跑
+        `security.check(db, uid, passwd)`（`odoo/service/model.py`），
+        認證失效（例如 session 過期、密碼被改）會在這裡拋
+        `odoo.exceptions.AccessDenied`——這是除了 `common.login` 回傳
+        `False` 之外，認證失敗的第二條路。Task 11 若把 E-4002 綁在
+        `except OdooAuthError` 上，漏掉這條會把認證問題誤判成普通資料
+        錯誤。
         """
         error = body.get("error")
         if error is None:
             return
-        data = error.get("data") or {}
+        if not isinstance(error, dict):
+            raise OdooError(f"Odoo 回傳的 error 不是預期的物件形狀（{type(error).__name__}）")
+        data = error.get("data")
+        if not isinstance(data, dict):
+            data = {}
         message = data.get("message") or error.get("message") or "Odoo 回傳未知錯誤"
+        if str(data.get("name", "")).endswith("AccessDenied"):
+            raise OdooAuthError(message)
         raise OdooError(message)
+
+    def _extract_result(self, body: dict[str, Any]) -> Any:
+        """把 `execute_kw` 的 JSON-RPC 回應轉成呼叫端拿到的回傳值。
+
+        Odoo 的方法回傳 `None` 時，JSON-RPC 回應根本不會有 `result` 鍵
+        （`odoo/http.py`：`if result is not None: response['result'] =
+        result`）——例如 `account.move.button_draft()` 最後一行是
+        `self.state = 'draft'`，沒有 `return`。這裡因此不能直接
+        `body["result"]`，那會讓一個正常的「方法沒有回傳值」變成一個
+        逃出本模組職責契約的裸 `KeyError`。呼叫端應假設「沒有
+        `result` 鍵」與「`result` 是 `None`」是同一件事。
+
+        呼叫端要先呼叫 `_raise_for_error(body)`，這個方法本身不檢查
+        `error` 鍵——它只負責 `result` 這一半的形狀轉換。
+        """
+        if "result" not in body:
+            return None
+        return body["result"]
 
     def _extract_uid(self, body: dict[str, Any]) -> int:
         """把 `common.login` 的 JSON-RPC 回應轉成 uid。
@@ -207,32 +270,90 @@ class OdooClient:
     # 抽成上面幾個純函式）
     # ------------------------------------------------------------------
 
+    def _endpoint(self) -> str:
+        """組出 `/jsonrpc` 的完整端點字串（純函式，不碰網路）。
+
+        `self.url` 的語意是 base URL（見欄位註解），呼叫端可能給
+        `"http://host:8069"` 或 `"http://host:8069/"`——`rstrip("/")`
+        確保兩種寫法都組出同一個端點，不會出現
+        `http://host:8069//jsonrpc` 這種雙斜線。這是全 repo 唯一知道
+        `/jsonrpc` 這個路由字面值的地方，呼叫端不必也不該自己記得接。
+        """
+        return self.url.rstrip("/") + "/jsonrpc"
+
+    def _parse_response(self, raw: bytes) -> dict[str, Any]:
+        """把 HTTP 回應本文解析成 JSON-RPC 的 body（純函式，不碰網路）。
+
+        `url` 給錯（例如漏接 `/jsonrpc`，或指到 Odoo 的網頁路由）常見
+        的結果是拿到 HTML 而不是 JSON：Odoo 對 `/` 回 303 轉址到
+        `/web`，`urllib` 預設會自動跟隨轉址且把 POST 降級成 GET
+        （`urllib/request.py` 對 301/302/303 的處理）。`json.loads`
+        對 HTML 會拋 `json.JSONDecodeError`（`ValueError` 的子類，不在
+        `OdooError` 家族裡）——這裡接住，轉成 `OdooError`，不讓它逃出
+        這個模組唯一的職責契約。
+
+        訊息**只帶原始回應的長度與解析失敗的位置，絕不把 `raw` 本身
+        塞進去**——回應本文有可能回顯了請求內容（含密碼），混進例外
+        訊息就是另一條密碼外洩路徑。
+        """
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise OdooError(
+                f"Odoo 回應不是合法 JSON（{len(raw)} bytes，解析失敗於位置 {exc.pos}）"
+            ) from None
+
+    def _map_connection_error(self, exc: urllib.error.URLError) -> None:
+        """把 `urlopen` 丟出的連線層例外轉成 `OdooError` 家族之一。
+
+        `HTTPError` 是 `URLError` 的子類別，這裡用單一 `isinstance`
+        判斷式而不是兩段依序比對的 `except HTTPError` / `except
+        URLError`——早先的寫法一旦順序被改動，`HTTPError`（例如 429）
+        就會先被寬鬆的 `URLError` 分支接走，誤判成「連線 Odoo 失敗」
+        而不是限流，Task 11 的退避邏輯就完全失效。抽成單一純函式後，
+        這個順序疑慮變成一行可以直接單元測試的邏輯，不必
+        monkeypatch `urlopen`（本地建構一個 `HTTPError` 例外物件只是
+        建物件，不是假扮 Odoo 回話）。
+        """
+        if isinstance(exc, urllib.error.HTTPError):
+            # 只取狀態碼與 reason phrase，不呼叫 exc.read()——那是伺服器
+            # 回應本文，會不會回顯請求內容不確定，不冒這個風險；也絕不
+            # 把 self.password 塞進這裡任何字串。
+            self._raise_for_http_status(exc.code, exc.reason or "")
+            return
+        # exc.reason 是連線層失敗原因（DNS 解析失敗、連線被拒絕、逾時
+        # ……），不含任何請求內容，也不含 self.password。
+        raise OdooError(f"連線 Odoo 失敗：{exc.reason}") from None
+
     def _send(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """把 `payload` POST 到 `/jsonrpc`，回傳解析後的 JSON body。
+        """把 `payload` POST 到 `{url}/jsonrpc`，回傳解析後的 JSON body。
+
+        `self.url` 是 base URL（見欄位註解），這裡自己接上 `/jsonrpc`
+        ——這是這個模組唯一該知道的路由細節，不該要求每個呼叫端都記得。
 
         這是這個檔案裡唯一真的碰網路的方法：不重試、不退避、不批次
         ——出錯只管把例外類型轉對，要不要再試一次是 loader.py 的責任。
         本機不對這個方法起假 HTTP server 測試（Global Constraints 第
         2 條禁止），它的正確性留給 Task 12 的 CI 整合測試驗證。
         """
+        scheme = urlparse(self.url).scheme
+        if scheme not in ("http", "https"):
+            raise OdooError(f"不支援的 URL scheme：{self.url!r}（只接受 http／https）")
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
-            self.url,
+            self._endpoint(),
             data=data,
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(request) as response:  # noqa: S310
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310
                 raw = response.read()
-        except urllib.error.HTTPError as exc:
-            # 只取狀態碼與 reason phrase，不呼叫 exc.read()——那是伺服器
-            # 回應本文，會不會回顯請求內容不確定，不冒這個風險。
-            self._raise_for_http_status(exc.code, exc.reason or "")
         except urllib.error.URLError as exc:
-            # exc.reason 是連線層失敗原因（DNS 解析失敗、連線被拒絕、
-            # 逾時……），不含任何請求內容。
-            raise OdooError(f"連線 Odoo 失敗：{exc.reason}") from None
-        return json.loads(raw)
+            self._map_connection_error(exc)
+            raise AssertionError(
+                "unreachable：_map_connection_error 兩個分支都必定拋例外"
+            ) from None
+        return self._parse_response(raw)
 
     # ------------------------------------------------------------------
     # 對外介面
@@ -258,10 +379,13 @@ class OdooClient:
         這不是重試邏輯，只是「execute_kw 需要 uid 才能組封包，還沒有
         就先拿一個」，同一次呼叫只嘗試一次，認證失敗就讓
         `OdooAuthError` 原樣往外拋，不吞、不重試。
+
+        `result` 鍵可能缺席（見 `_extract_result` docstring），這裡不
+        直接 `body["result"]`，改交給那個純函式處理。
         """
         if self._uid is None:
             self.authenticate()
         payload = self._build_payload(model, method, args, kwargs, uid=self._uid)
         body = self._send(payload)
         self._raise_for_error(body)
-        return body["result"]
+        return self._extract_result(body)
