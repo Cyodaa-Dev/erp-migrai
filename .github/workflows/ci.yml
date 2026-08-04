@@ -214,11 +214,112 @@ jobs:
 
           echo "所有 commit 都已簽署 DCO。"
 
-# ---- integration job 留位 ----
-#
-# 載入階段與驗證階段完成後，在此新增一個 `integration` job：
-# 用 GitHub Actions 的 service container 起 Odoo 17 CE 與 PostgreSQL，
-# 對 corpus 語料跑一次涵蓋 scan、map、載入、驗證的完整管線，確認產物
-# 真的能匯入 Odoo，而不只是通過單元測試。
-#
-# 現在不寫這個 job——載入階段與驗證階段還不存在，沒有東西可以 integrate。
+  # 整個計劃唯一能證明前面十一個任務真的有用的 job：對一台真的 Odoo 17 CE
+  # 跑完 scan → map → load → verify 四段管線（tests/integration/
+  # test_odoo_roundtrip.py 的四條測試），確認產物真的能匯入 Odoo，而不只是
+  # 通過單元測試。
+  #
+  # 用 `docker run` 而不是 `services:`：`services:` 起容器的時機比
+  # `steps:` 早，且沒有機會在啟動時傳 `-i base,account,sale,product` 這種
+  # 只有 Odoo 自己的 entrypoint 認得的初始化參數（`services:` 只能設
+  # image／env／ports，換不了 command）。
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 取得原始碼
+        uses: actions/checkout@v7
+
+      - name: 安裝 uv（含快取）
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: 安裝開發環境
+        run: uv sync --locked
+
+      - name: 產生 corpus 的 data.sqlite（demo-full 依賴它，見 Makefile）
+        run: make corpus
+
+      # PostgreSQL：`postgres:16`（Odoo 17 官方 docker-compose 範例的搭配）。
+      # POSTGRES_USER=odoo 這個使用者是 initdb 的 bootstrap 使用者，
+      # 天生就有 CREATEDB 權限——Odoo 用 `-d migrai -i ...` 初始化時會
+      # 自己建資料庫，這裡不需要另外跑一次 `createdb`。
+      #
+      # Odoo：官方 image 是 `odoo`（`library/odoo`），tag `17.0`
+      # （PRE-FLIGHT 1：Docker Hub API 實查，`17` 與 `17.0` 都存在，這裡
+      # 用更明確的 `17.0`）。連線參數透過環境變數傳
+      # （`HOST`／`USER`／`PASSWORD`，PRE-FLIGHT 2：
+      # `odoo/docker` 官方 entrypoint.sh 的 `wait-for-psql.py` 會自己等
+      # Postgres ready，這裡不需要另外等 Postgres）。
+      #
+      # `-i base,account,sale,product`：`account` 一定要裝——
+      # `res.partner.credit_limit` 是它加到 `res.partner` 上的欄位，
+      # case03 的 cust_mast.cust_credit 會映射到那個欄位。
+      # `--without-demo=all`：demo 資料會拖慢初始化，也會讓人誤以為
+      # Odoo 裡的資料是我們寫進去的。
+      #
+      # admin 帳密固定是 `admin`／`admin`（PRE-FLIGHT 4：
+      # `odoo/addons/base/data/res_users_data.xml`），`-i` 跑完之後
+      # 不需要另外呼叫 `exp_create_database` 或設密碼。
+      - name: 啟動 PostgreSQL 與 Odoo 17 CE
+        run: |
+          docker network create migrai-net
+
+          docker run -d --name migrai-pg --network migrai-net \
+            -e POSTGRES_USER=odoo \
+            -e POSTGRES_PASSWORD=odoo \
+            -e POSTGRES_DB=postgres \
+            postgres:16
+
+          docker run -d --name migrai-odoo --network migrai-net \
+            -p 8069:8069 \
+            -e HOST=migrai-pg \
+            -e USER=odoo \
+            -e PASSWORD=odoo \
+            odoo:17.0 \
+            -d migrai -i base,account,sale,product --without-demo=all
+
+      # 🔴 絕不用固定的 `sleep 30`——那會在慢的 runner 上隨機失敗，而失敗
+      # 原因看起來會像我們的程式碼有問題（任務書明文禁止）。改用有上限的
+      # 輪詢迴圈，條件是 `/jsonrpc` 的 `common.version` 回得出東西——
+      # 這個方法本身不需要認證（`odoo/service/common.py` 的
+      # `exp_version`），而且順便驗證了 `OdooClient._endpoint()` 的
+      # `/jsonrpc` 路由假設是對的。
+      - name: 等待 Odoo ready（輪詢 /jsonrpc 的 common.version）
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf -X POST -H 'Content-Type: application/json' \
+                 -d '{"jsonrpc":"2.0","method":"call","params":{"service":"common","method":"version","args":[]},"id":null}' \
+                 http://localhost:8069/jsonrpc > /dev/null; then
+              echo "Odoo ready（第 $i 次輪詢）"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Odoo 在 120 秒內沒有 ready"
+          echo "---- migrai-odoo 容器記錄 ----"
+          docker logs migrai-odoo || true
+          exit 1
+
+      # 密碼走環境變數，不進 argv（P3-2）；`tests/integration/
+      # test_odoo_roundtrip.py` 的 `odoo_conn` fixture 讀
+      # `MIGRAI_ODOO_URL`／`MIGRAI_ODOO_DB`／`MIGRAI_ODOO_USER`，
+      # `migrai load`／`migrai verify` 本身讀 `MIGRAI_ODOO_PASSWORD`
+      # （P3-2 既有契約，不是這個 job 新發明的）。
+      - name: 跑整合測試（四條，缺一不可）
+        env:
+          MIGRAI_ODOO_URL: http://localhost:8069
+          MIGRAI_ODOO_DB: migrai
+          MIGRAI_ODOO_USER: admin
+          MIGRAI_ODOO_PASSWORD: admin
+        run: uv run pytest -v -m integration tests/integration
+
+      - name: 印出容器記錄（失敗時協助除錯）
+        if: failure()
+        run: |
+          echo "---- migrai-odoo ----"
+          docker logs migrai-odoo || true
+          echo "---- migrai-pg ----"
+          docker logs migrai-pg || true
