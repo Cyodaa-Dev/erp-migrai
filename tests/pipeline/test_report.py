@@ -4,7 +4,14 @@
 
 from __future__ import annotations
 
-from erp_migrai.pipeline.report import build_report, render_markdown
+import pytest
+
+from erp_migrai.pipeline.report import (
+    ReportSchemaError,
+    build_report,
+    render_markdown,
+    validate_report,
+)
 from erp_migrai.pipeline.verify import Check
 
 # --------------------------------------------------------------------------
@@ -13,7 +20,12 @@ from erp_migrai.pipeline.verify import Check
 
 
 def test_build_report_shape():
-    checks = [Check("row_count", "cust_mast", "res.partner", "pass", 3, 3, None, None)]
+    """`source_count`／`target_count` 刻意用非對稱的 7／3（不是兩個相等的
+    3／3）——審查修正輪次 1 Critical C3：若只用對稱夾具，`build_report`
+    把兩個欄位對調（M47）不會被這條測試發現，因為對調後 dict 長得一模
+    一樣。這裡的完整 dict 相等比較能直接分辨兩者。
+    """
+    checks = [Check("row_count", "cust_mast", "res.partner", "pass", 7, 3, None, None)]
     report = build_report(checks, source_id="case03", synthetic=True)
     assert report["schema_version"] == "1.0"
     assert report["source_id"] == "case03"
@@ -24,7 +36,7 @@ def test_build_report_shape():
             "source_table": "cust_mast",
             "target_model": "res.partner",
             "status": "pass",
-            "source_count": 3,
+            "source_count": 7,
             "target_count": 3,
             "source_amount": None,
             "target_amount": None,
@@ -55,10 +67,15 @@ def test_build_report_synthetic_false_is_preserved():
 
 
 def test_render_markdown_contains_table_names_and_summary_numbers():
-    """給一份含 1 pass 1 fail 的報告，斷言渲染結果同時含兩個表名、含 `1`
-    與 `2` 這兩個數字，且含失敗那一列的 `source_count`／`target_count`
-    兩個實際數值（人要能從報告直接看出差了幾筆，而不是只看到「失敗」
-    兩個字）。"""
+    """給一份含 1 pass 1 fail 的報告，斷言渲染結果同時含兩個表名、含
+    summary 的數字，且失敗那一列的完整表格列（含 `source_count`／
+    `target_count` 依序出現的實際數值）必須原樣出現。
+
+    審查修正輪次 1 Critical C3：原本只斷言 `"5" in md` 跟 `"4" in md`——
+    這種寫法對『兩個數字對調』（M18：md 的兩欄對調）完全免疫，因為對調
+    後兩個數字字串一樣都還在文字裡的某處。這裡改斷言整列字串，數字的
+    先後順序才真的被釘住。
+    """
     checks = [
         Check("row_count", "cust_mast", "res.partner", "pass", 3, 3, None, None),
         Check("row_count", "ord_mast", "sale.order", "fail", 5, 4, None, None),
@@ -67,13 +84,12 @@ def test_render_markdown_contains_table_names_and_summary_numbers():
     md = render_markdown(report)
 
     assert "cust_mast" in md
-    assert "ord_mast" in md
     # summary：總計 2、失敗 1
     assert "總計：2" in md
     assert "失敗：1" in md
-    # 失敗那一列的實際數字（5 vs 4）必須出現，不能只寫「失敗」兩個字。
-    assert "5" in md
-    assert "4" in md
+    # 失敗那一列必須完整依序出現「5」（source）與「4」（target），不能只
+    # 是隨便哪裡出現這兩個字元。
+    assert "| row_count | ord_mast | sale.order | ❌ fail | 5 | 4 |" in md
 
 
 def test_render_markdown_amount_check_shows_amount_strings_not_counts():
@@ -122,3 +138,57 @@ def test_render_markdown_pass_and_fail_have_different_symbols():
     md = render_markdown(report)
     assert "✅" in md
     assert "❌" in md
+
+
+# --------------------------------------------------------------------------
+# validate_report：build_report 真正的產出必須通過
+# verification_report.schema.json（審查修正輪次 1 Critical C4）
+# --------------------------------------------------------------------------
+
+
+def test_build_report_output_of_row_count_and_amount_checks_passes_schema_validation():
+    """`test_verification_report_schema.py` 的 36 條測試驗的是一份手寫
+    夾具，從沒驗過 `build_report()` 真正的產出——這裡直接把 `build_report`
+    的輸出丟進 `validate_report`，`build_report` 若不小心在某個 kind 多吐
+    一個 schema 禁止的鍵（M58），這裡會直接爆炸而不是靜靜地全綠。
+    """
+    checks = [
+        Check("row_count", "cust_mast", "res.partner", "pass", 3, 3, None, None),
+        Check(
+            "amount_subtotal",
+            "ord_deta",
+            "sale.order.line",
+            "pass",
+            None,
+            None,
+            "26999.99",
+            "26999.99",
+        ),
+    ]
+    report = build_report(checks, source_id="case03", synthetic=True)
+    validate_report(report)  # 不拋例外就是通過
+
+
+def test_build_report_output_with_empty_checks_passes_schema_validation():
+    report = build_report([], source_id="case03", synthetic=False)
+    validate_report(report)
+
+
+def test_validate_report_rejects_extra_key_on_a_check():
+    """模擬 M58：`build_report` 若在某個 check 多吐一個 schema
+    `additionalProperties: false` 禁止的鍵，`validate_report` 必須拋
+    `ReportSchemaError`，不能安靜地放行。
+    """
+    report = build_report(
+        [Check("row_count", "a", "m", "pass", 1, 1, None, None)], source_id="c3", synthetic=True
+    )
+    report["checks"][0]["note"] = "schema 不允許的額外鍵"
+    with pytest.raises(ReportSchemaError):
+        validate_report(report)
+
+
+def test_validate_report_rejects_report_missing_required_field():
+    report = build_report([], source_id="c3", synthetic=True)
+    del report["schema_version"]
+    with pytest.raises(ReportSchemaError):
+        validate_report(report)

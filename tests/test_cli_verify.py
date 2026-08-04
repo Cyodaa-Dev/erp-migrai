@@ -20,7 +20,10 @@ from contextlib import closing
 import pytest
 from typer.testing import CliRunner
 
-from erp_migrai.cli import app
+from erp_migrai.cli import _resolve_source_counts, app, write_reports
+from erp_migrai.pipeline.report import build_report
+from erp_migrai.pipeline.source import SqliteSourceReader
+from erp_migrai.pipeline.verify import Check
 
 _IS_ROOT = hasattr(os, "getuid") and os.getuid() == 0
 
@@ -357,3 +360,133 @@ def test_connection_failure_does_not_require_odoo_reachable_to_validate_log_and_
     assert "連線 Odoo 失敗" in result.stdout
     assert "--log" not in result.stdout
     assert "--mapping" not in result.stdout
+
+
+def test_odoo_connection_failure_message_has_no_duplicated_prefix(
+    minimal_mapping_path, minimal_source, minimal_log_path, tmp_path, monkeypatch
+):
+    """審查修正輪次 1（順手修）：`OdooError` 的訊息本身在連線被拒絕這種
+    情境下已經含「連線 Odoo 失敗：」（`odoo_client.py` 的 `_send()`），
+    `cli.py` 不該再疊加一次同樣的前綴，變成「連線 Odoo 失敗：連線 Odoo
+    失敗：……」。"""
+    monkeypatch.setenv("MIGRAI_ODOO_PASSWORD", "s3cret")
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app, _connect_args(minimal_mapping_path, minimal_source, minimal_log_path, out)
+    )
+    assert result.exit_code == 1
+    assert "連線 Odoo 失敗：連線 Odoo 失敗" not in result.stdout
+
+
+# --------------------------------------------------------------------------
+# --log 的 external_id 必須對應這次 --source-id（審查修正輪次 1 Critical
+# C4／控制者裁決）——純字串比對，連線 Odoo 之前就能擋下，不需要 Odoo。
+# --------------------------------------------------------------------------
+
+
+def test_log_with_mismatched_source_id_exits_one_before_connecting_to_odoo(
+    minimal_mapping_path, minimal_source, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MIGRAI_ODOO_PASSWORD", "s3cret")
+    mismatched_entry = {**_LOG_ENTRY, "external_id": "migrai.other_source.cust.C001"}
+    bad_log = tmp_path / "mismatched.jsonl"
+    bad_log.write_text(json.dumps(mismatched_entry) + "\n", encoding="utf-8")
+    out = tmp_path / "out"
+
+    result = runner.invoke(app, _connect_args(minimal_mapping_path, minimal_source, bad_log, out))
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.stdout
+    assert "不符" in result.stdout
+    assert "migrai.other_source.cust.C001" in result.stdout
+    # 必須在連線之前就擋下——不該看到連線失敗的訊息。
+    assert "連線 Odoo 失敗" not in result.stdout
+    assert not (out / "verification_report.json").exists()
+
+
+def test_log_with_matching_source_id_passes_the_check(
+    minimal_mapping_path, minimal_source, minimal_log_path, tmp_path, monkeypatch
+):
+    """反例：`minimal_log_path`／`_connect_args` 用的 `--source-id` 都是
+    `t1`，`_LOG_ENTRY` 的 external_id 也是 `migrai.t1.cust.C001`——這個
+    檢查必須放行，執行照樣往下走到連線 Odoo 那一步（loopback :1 必然
+    連線失敗，但那是後面的事，不是這裡擋下來的）。
+    """
+    monkeypatch.setenv("MIGRAI_ODOO_PASSWORD", "s3cret")
+    out = tmp_path / "out"
+    result = runner.invoke(
+        app, _connect_args(minimal_mapping_path, minimal_source, minimal_log_path, out)
+    )
+    assert result.exit_code == 1
+    assert "不符" not in result.stdout
+    assert "連線 Odoo 失敗" in result.stdout
+
+
+# --------------------------------------------------------------------------
+# _resolve_source_counts：source_count 的分母只能來自 reader.count()
+# （審查修正輪次 1 Critical C1／M61）
+# --------------------------------------------------------------------------
+
+
+def test_resolve_source_counts_uses_reader_count_not_migration_log(tmp_path):
+    """`source_count` 的定義是「來源表的總筆數」，唯一合法來源是
+    `SourceReader.count()`——不可以用『migration_log 裡非 failed 的筆數』
+    代替。這裡建一張有 3 筆的來源表，並且用註解文件化一份『假想的』
+    migration_log 只回報 2 筆成功：`_resolve_source_counts` 的簽章根本
+    沒有接受 log 的參數，想犯這個錯誤得先幫函式簽章加一個參數。
+    """
+    db_path = tmp_path / "data.sqlite"
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute("CREATE TABLE cust (id CHAR(4) NOT NULL, name CHAR(20), PRIMARY KEY (id))")
+        con.executemany(
+            "INSERT INTO cust VALUES (?, ?)",
+            [("C001", "Alice"), ("C002", "Bob"), ("C003", "Carol")],
+        )
+        con.commit()
+
+    # 假想中一份 migration_log：只有 2 筆 created、1 筆 failed——如果分母
+    # 錯誤地取「非 failed 的筆數」，會算出 2，而不是來源真正的 3。這個
+    # 變數只是把陷阱寫進測試文件，不會被餵給 `_resolve_source_counts`。
+    hypothetical_log_derived_count = 2
+    assert hypothetical_log_derived_count != 3, "這條測試本身要能分辨兩個數字"
+
+    with SqliteSourceReader(db_path) as reader:
+        counts = _resolve_source_counts(reader, [("cust", "res.partner")])
+
+    assert counts == {"cust": 3}
+
+
+def test_resolve_source_counts_covers_every_target_table(tmp_path):
+    db_path = tmp_path / "data.sqlite"
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute("CREATE TABLE a (id CHAR(4) NOT NULL, PRIMARY KEY (id))")
+        con.execute("CREATE TABLE b (id CHAR(4) NOT NULL, PRIMARY KEY (id))")
+        con.execute("INSERT INTO a VALUES ('A1')")
+        con.executemany("INSERT INTO b VALUES (?)", [("B1",), ("B2",)])
+        con.commit()
+
+    with SqliteSourceReader(db_path) as reader:
+        counts = _resolve_source_counts(reader, [("a", "res.partner"), ("b", "sale.order")])
+
+    assert counts == {"a": 1, "b": 2}
+
+
+# --------------------------------------------------------------------------
+# write_reports：報告永遠先寫出，才判斷 exit code（審查修正輪次 1
+# Critical C2 的部分覆蓋——真正端到端留給 Task 12）
+# --------------------------------------------------------------------------
+
+
+def test_write_reports_writes_both_files_even_when_all_checks_fail(tmp_path):
+    checks = [Check("row_count", "cust_mast", "res.partner", "fail", 3, 1, None, None)]
+    report = build_report(checks, source_id="case03", synthetic=True)
+    json_path = tmp_path / "verification_report.json"
+    md_path = tmp_path / "verification_report.md"
+
+    write_reports(report, json_path=json_path, md_path=md_path)
+
+    assert json_path.exists()
+    assert md_path.exists()
+    written = json.loads(json_path.read_text(encoding="utf-8"))
+    assert written["summary"]["failed"] == 1
+    assert "❌" in md_path.read_text(encoding="utf-8")

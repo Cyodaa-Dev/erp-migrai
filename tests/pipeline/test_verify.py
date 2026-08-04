@@ -20,17 +20,27 @@ from pathlib import Path
 
 import pytest
 
+from erp_migrai.events import E_5001, E_5002
 from erp_migrai.pipeline.verify import (
     KINDS,
     STATUSES,
+    TARGET_LINE_AMOUNT_FIELD,
+    VERIFICATION_ROUNDING,
     Check,
     MigrationLogReadError,
+    assemble_checks,
     compare_amount,
     compare_row_count,
     count_names_with_prefix,
+    fatal_code_for,
     find_amount_subtotal_target,
+    find_mismatched_external_ids,
     find_row_count_targets,
+    ir_model_data_domain,
     parse_migration_log,
+    res_ids_with_prefix,
+    resolve_synthetic,
+    resolve_target_counts,
     sum_source_amount,
     sum_target_amount,
 )
@@ -64,8 +74,14 @@ def test_row_count_match_is_pass():
 
 
 def test_row_count_mismatch_is_fail():
-    c = compare_row_count("cust_mast", "res.partner", 3, 2)
+    """夾具刻意非對稱（7 vs 3，不是隨便挑的兩個相近數字）：只斷言
+    `status` 分辨不出『兩個欄位對調』（審查修正輪次 1 Critical C3），這裡
+    額外斷言 `source_count`／`target_count` 真的各自對到哪個引數。
+    """
+    c = compare_row_count("cust_mast", "res.partner", 7, 3)
     assert c.status == "fail"
+    assert c.source_count == 7
+    assert c.target_count == 3
 
 
 def test_row_count_has_no_tolerance():
@@ -95,14 +111,20 @@ def test_amount_within_currency_rounding_is_pass():
 
 
 def test_amount_beyond_rounding_is_fail():
+    """夾具刻意非對稱：只斷言 `status` 分辨不出『兩個金額對調』（審查修正
+    輪次 1 Critical C3），這裡額外斷言 `source_amount`／`target_amount`
+    的字串各自對到哪個引數。
+    """
     c = compare_amount(
         "ord_deta",
         "sale.order.line",
-        Decimal("12345.00"),
-        Decimal("12346.00"),
+        Decimal("100.00"),
+        Decimal("90.00"),
         rounding=Decimal("0.01"),
     )
     assert c.status == "fail"
+    assert c.source_amount == "100.00"
+    assert c.target_amount == "90.00"
 
 
 def test_amount_exactly_at_rounding_boundary_is_pass():
@@ -333,6 +355,17 @@ def test_count_names_with_prefix_empty_list_is_zero():
     assert count_names_with_prefix([], "case03.cust_mast.") == 0
 
 
+def test_count_names_with_prefix_requires_match_at_the_start_not_anywhere():
+    """審查修正輪次 1 Important I2／M14：既有夾具（`custXmast` vs
+    `cust_mast`）恰好分辨不出 `str.startswith` 跟 `prefix in name` 這兩種
+    實作——兩者對那組夾具的判斷結果剛好一樣。這裡加一筆 prefix 出現在
+    字串「中間」而不是「開頭」的名字：`str.startswith` 正確排除它，
+    `prefix in name` 會誤判成命中。
+    """
+    names = ["x" + "case03.cust_mast.C001", "case03.cust_mast.C002"]
+    assert count_names_with_prefix(names, "case03.cust_mast.") == 1
+
+
 # --------------------------------------------------------------------------
 # find_row_count_targets／find_amount_subtotal_target：從 mapping.json
 # 找出要驗證什麼
@@ -449,3 +482,241 @@ def test_parse_migration_log_skips_blank_lines_between_valid_entries():
     text = json.dumps(_log_entry()) + "\n\n" + json.dumps(_log_entry(source_pk=["C002"]))
     entries = parse_migration_log(text)
     assert len(entries) == 2
+
+
+# --------------------------------------------------------------------------
+# find_mismatched_external_ids：--log 是否真的對應這次 --source-id
+# （審查修正輪次 1 Critical C4／控制者裁決）
+# --------------------------------------------------------------------------
+
+
+def test_find_mismatched_external_ids_flags_entries_with_wrong_prefix():
+    entries = [
+        {"external_id": "migrai.case03.cust_mast.C001"},
+        {"external_id": "migrai.other_source.cust_mast.C002"},
+    ]
+    result = find_mismatched_external_ids(entries, prefix="migrai.case03.")
+    assert result == ["migrai.other_source.cust_mast.C002"]
+
+
+def test_find_mismatched_external_ids_empty_when_all_match():
+    entries = [
+        {"external_id": "migrai.case03.cust_mast.C001"},
+        {"external_id": "migrai.case03.ord_mast.O0001"},
+    ]
+    assert find_mismatched_external_ids(entries, prefix="migrai.case03.") == []
+
+
+def test_find_mismatched_external_ids_empty_entries_is_empty_list():
+    assert find_mismatched_external_ids([], prefix="migrai.case03.") == []
+
+
+# --------------------------------------------------------------------------
+# res_ids_with_prefix：`_target_line_amount` 用來過濾 res_id 的純函式
+# （審查修正輪次 1 Important I3／M38）
+# --------------------------------------------------------------------------
+
+
+def test_res_ids_with_prefix_filters_by_prefix_and_ignores_other_source_ids():
+    rows = [
+        {"name": "case03.ord_deta.O0001-1", "res_id": 10},
+        {"name": "case03.ord_deta.O0001-2", "res_id": 11},
+        {"name": "other_source.ord_deta.O0001-1", "res_id": 99},
+    ]
+    assert res_ids_with_prefix(rows, "case03.ord_deta.") == [10, 11]
+
+
+def test_res_ids_with_prefix_empty_rows_is_empty_list():
+    assert res_ids_with_prefix([], "case03.ord_deta.") == []
+
+
+# --------------------------------------------------------------------------
+# ir_model_data_domain：查 ir.model.data 的 domain 一定要同時帶 module 與
+# model 兩個條件（審查修正輪次 1 Important I3／M44）
+# --------------------------------------------------------------------------
+
+
+def test_ir_model_data_domain_includes_module_and_model_filters():
+    domain = ir_model_data_domain(module="migrai", target_model="res.partner")
+    assert ["module", "=", "migrai"] in domain
+    assert ["model", "=", "res.partner"] in domain
+    assert len(domain) == 2
+
+
+# --------------------------------------------------------------------------
+# resolve_synthetic：從 mapping.json 讀出 inventory_synthetic
+# （審查修正輪次 1 Critical C1／M41）
+# --------------------------------------------------------------------------
+
+
+def test_resolve_synthetic_true():
+    assert resolve_synthetic({"inventory_synthetic": True}) is True
+
+
+def test_resolve_synthetic_false():
+    """False 不能在傳遞路徑上被悄悄改成 True（M41 的字面重現）。"""
+    assert resolve_synthetic({"inventory_synthetic": False}) is False
+
+
+def test_resolve_synthetic_missing_key_defaults_to_false():
+    assert resolve_synthetic({}) is False
+
+
+# --------------------------------------------------------------------------
+# resolve_target_counts：從「已查好的 name 清單」數出每張表的 target_count
+# （審查修正輪次 1 Critical C1／M57）
+# --------------------------------------------------------------------------
+
+
+def test_resolve_target_counts_uses_source_id_and_table_prefix():
+    """`names_by_model` 裡刻意混進『同一個模型、不同表』與『同一張表、
+    不同 source_id』的名字——若 prefix 被換成空字串（M57：拿掉
+    `source_id`／`table` 隔離）,兩張表都會把不該算進去的名字也數進去。
+    """
+    targets = [("cust_mast", "res.partner"), ("ord_mast", "sale.order")]
+    names_by_model = {
+        "res.partner": [
+            "case03.cust_mast.C001",
+            "case03.cust_mast.C002",
+            "case03.ord_mast.O0001",  # 同一個 module，但是別的表
+        ],
+        "sale.order": [
+            "case03.ord_mast.O0001",
+            "case03.ord_mast.O0002",
+            "other_source.ord_mast.O0003",  # 同一張表，但是別的 source_id
+        ],
+    }
+    result = resolve_target_counts(targets, "case03", names_by_model)
+    assert result == {"cust_mast": 2, "ord_mast": 2}
+
+
+def test_resolve_target_counts_missing_model_in_names_by_model_is_zero():
+    """`names_by_model` 沒有某個 target_model 的鍵（例如那個模型底下
+    一筆 migrai 記錄都沒有）該當成 0，不該拋例外。"""
+    targets = [("cust_mast", "res.partner")]
+    result = resolve_target_counts(targets, "case03", {})
+    assert result == {"cust_mast": 0}
+
+
+# --------------------------------------------------------------------------
+# assemble_checks：把已經查好的數字組成完整的 Check 清單
+# （審查修正輪次 1 Critical C1，這一項解掉大半審查發現的缺口）
+# --------------------------------------------------------------------------
+
+
+def test_assemble_checks_combines_row_and_amount_checks_with_asymmetric_fixtures():
+    """夾具全部非對稱：`source_counts`／`target_counts` 兩張表的數字都不
+    相等，金額也不相等——分辨得出『兩個 count 對調』（M31）跟『金額
+    check 永不產生』（M39）這兩種缺陷。
+    """
+    mapping = {
+        "models": [
+            {"source_table": "cust_mast", "target_model": "res.partner"},
+            {"source_table": "ord_mast", "target_model": "sale.order"},
+        ]
+    }
+    source_counts = {"cust_mast": 7, "ord_mast": 5}
+    target_counts = {"cust_mast": 3, "ord_mast": 5}
+    line_spec = ("ord_deta", "sale.order.line", "ord_qty", "ord_price")
+
+    checks = assemble_checks(
+        mapping,
+        source_counts,
+        target_counts,
+        line_spec,
+        Decimal("100.00"),
+        Decimal("90.00"),
+        rounding=Decimal("0.01"),
+    )
+
+    assert len(checks) == 3
+    by_table = {c.source_table: c for c in checks}
+
+    assert by_table["cust_mast"].kind == "row_count"
+    assert by_table["cust_mast"].source_count == 7
+    assert by_table["cust_mast"].target_count == 3
+    assert by_table["cust_mast"].status == "fail"
+
+    assert by_table["ord_mast"].kind == "row_count"
+    assert by_table["ord_mast"].source_count == 5
+    assert by_table["ord_mast"].target_count == 5
+    assert by_table["ord_mast"].status == "pass"
+
+    assert by_table["ord_deta"].kind == "amount_subtotal"
+    assert by_table["ord_deta"].source_amount == "100.00"
+    assert by_table["ord_deta"].target_amount == "90.00"
+    assert by_table["ord_deta"].status == "fail"
+
+
+def test_assemble_checks_no_amount_check_when_line_spec_is_none():
+    mapping = {"models": [{"source_table": "cust", "target_model": "res.partner"}]}
+    checks = assemble_checks(mapping, {"cust": 3}, {"cust": 3}, None, None, None)
+    assert len(checks) == 1
+    assert checks[0].kind == "row_count"
+
+
+def test_assemble_checks_uses_verification_rounding_as_default_tolerance():
+    """不明講 `rounding` 時必須用 `VERIFICATION_ROUNDING`（0.01），不是被
+    放大的容差（M42：容差放大到 1000 倍，一千元差額也算 pass）——這裡的
+    50 元差額在 0.01 容差下必須 `fail`，只有容差被放大好幾個數量級才會
+    變成 `pass`。
+    """
+    checks = assemble_checks(
+        {"models": []},
+        {},
+        {},
+        ("ord_deta", "sale.order.line", "ord_qty", "ord_price"),
+        Decimal("100.00"),
+        Decimal("150.00"),
+    )
+    assert len(checks) == 1
+    assert checks[0].status == "fail"
+
+
+def test_assemble_checks_rejects_line_spec_without_amounts():
+    """`line_spec` 非 `None` 卻沒帶 `source_amount`／`target_amount` 是
+    呼叫端的契約違反，必須大聲失敗，不能悄悄跳過金額比對。"""
+    with pytest.raises(ValueError):
+        assemble_checks(
+            {"models": []},
+            {},
+            {},
+            ("ord_deta", "sale.order.line", "ord_qty", "ord_price"),
+            None,
+            None,
+        )
+
+
+# --------------------------------------------------------------------------
+# fatal_code_for：row_count → E-5001，amount_subtotal → E-5002
+# （審查修正輪次 1 Critical C2／M34）
+# --------------------------------------------------------------------------
+
+
+def test_fatal_code_for_row_count_check_is_e5001():
+    c = compare_row_count("cust_mast", "res.partner", 3, 2)
+    assert fatal_code_for(c) is E_5001
+
+
+def test_fatal_code_for_amount_check_is_e5002():
+    c = compare_amount(
+        "ord_deta", "sale.order.line", Decimal("1.00"), Decimal("5.00"), rounding=Decimal("0.01")
+    )
+    assert fatal_code_for(c) is E_5002
+
+
+# --------------------------------------------------------------------------
+# VERIFICATION_ROUNDING／TARGET_LINE_AMOUNT_FIELD：兩個原本沒有測試守著
+# 的常數（審查修正輪次 1 Important I4／I3）
+# --------------------------------------------------------------------------
+
+
+def test_verification_rounding_is_one_cent():
+    assert Decimal("0.01") == VERIFICATION_ROUNDING
+
+
+def test_target_line_amount_field_is_price_subtotal_not_price_total():
+    """『比未稅 price_subtotal 而非含稅』是這個模組存在的理由——見模組
+    docstring「為什麼比對 price_subtotal 而不是 amount_total」那一節。
+    """
+    assert TARGET_LINE_AMOUNT_FIELD == "price_subtotal"

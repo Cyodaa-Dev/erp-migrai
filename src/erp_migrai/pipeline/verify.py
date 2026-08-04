@@ -36,6 +36,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, ValidationError
 
+from erp_migrai.events import E_5001, E_5002, ErrorCode
+
 # --------------------------------------------------------------------------
 # Check：一條比對結果
 # --------------------------------------------------------------------------
@@ -43,6 +45,22 @@ from jsonschema import Draft202012Validator, ValidationError
 # 兩個 kind、兩個 status，意義互斥且窮盡（precedent：models.ACTIONS）。
 KINDS = frozenset({"row_count", "amount_subtotal"})
 STATUSES = frozenset({"pass", "fail"})
+
+# 金額比對的容差：Odoo 預設幣別（TWD／USD）最小單位皆為分，0.01 是貨幣捨入
+# 誤差的合理容差，不是拍腦袋（設計 spec §3.6：「容差為 Odoo 的幣別
+# rounding（0.01）」）。原本住在 `cli.py`，審查修正輪次 1 Important I4：
+# 這個常數沒有任何測試守著——搬過來跟 `assemble_checks` 的預設值放在一起，
+# 一條 `assert VERIFICATION_ROUNDING == Decimal("0.01")` 就直接釘死。
+VERIFICATION_ROUNDING = Decimal("0.01")
+
+# `_target_line_amount`（`cli.py`）讀 Odoo 明細記錄要比對哪個欄位——必須是
+# `price_subtotal`（未稅），不是 `price_total`（含稅），見模組 docstring
+# 「為什麼比對 price_subtotal 而不是 amount_total」那一節。審查修正輪次 1
+# Important I3：這個選擇原本是 `cli.py` 裡一個沒有測試守著的字面值
+# （`{"fields": ["price_subtotal"]}`），搬成常數讓 `sum_target_amount`
+# 的預設值與 `cli.py` 的 RPC 呼叫共用同一個來源，改壞其中一處會被
+# 另一處的既有測試連帶絆倒。
+TARGET_LINE_AMOUNT_FIELD = "price_subtotal"
 
 
 @dataclass(frozen=True)
@@ -143,7 +161,7 @@ def sum_source_amount(
 
 
 def sum_target_amount(
-    records: Iterable[Mapping[str, Any]], *, field: str = "price_subtotal"
+    records: Iterable[Mapping[str, Any]], *, field: str = TARGET_LINE_AMOUNT_FIELD
 ) -> Decimal:
     """Odoo 明細記錄的 `price_subtotal` 合計。
 
@@ -171,6 +189,40 @@ def count_names_with_prefix(names: Iterable[str], prefix: str) -> int:
     可能撈進不該撈進的記錄。python 端的 `str.startswith` 沒有這個問題。
     """
     return sum(1 for name in names if name.startswith(prefix))
+
+
+def res_ids_with_prefix(rows: Iterable[Mapping[str, Any]], prefix: str) -> list[Any]:
+    """從 `ir.model.data.search_read` 查回來的 `rows`（每筆含 `name`／
+    `res_id` 兩個欄位）裡，挑出 `name` 以 `prefix` 開頭的那些，回傳它們的
+    `res_id` 清單（保持原順序）。
+
+    跟 `count_names_with_prefix` 用同一種字串比對（`str.startswith`，同一
+    個底線陷阱說明見該函式 docstring），差別只在這裡回傳的是 `res_id`
+    清單（供 `cli._target_line_amount` 下一步 `read()` 用），不是計數。
+    審查修正輪次 1 Important I3／M38：這段邏輯原本是 `cli.py` 裡一段沒有
+    測試守著的 list comprehension，任何人拿掉 `.startswith(prefix)` 這個
+    條件（等於把所有 `source_id` 的明細都加進合計）都不會被任何測試擋下；
+    搬成獨立函式後可以直接單元測試。
+    """
+    return [
+        row["res_id"]
+        for row in rows
+        if isinstance(row, Mapping) and str(row.get("name", "")).startswith(prefix)
+    ]
+
+
+def ir_model_data_domain(*, module: str, target_model: str) -> list[list[Any]]:
+    """組出查 `ir.model.data` 要用的 domain：限定 `module` 與 `model` 兩個
+    條件。
+
+    抽成獨立函式（審查修正輪次 1 Important I3／M44）：`cli.py` 裡
+    `_target_names`／`_target_line_amount` 兩處各自組了一份幾乎一樣的
+    domain，`model` 條件若被拿掉（例如手滑刪掉那一個 list），查詢會撈到
+    「同一個 migrai module 底下、其他目標模型」的記錄，數量對不上卻不會
+    有任何測試發現——兩處共用同一個純函式，這裡直接單元測試 domain 的
+    形狀，不必連 Odoo 才測得到。
+    """
+    return [["module", "=", module], ["model", "=", target_model]]
 
 
 # --------------------------------------------------------------------------
@@ -214,6 +266,108 @@ def find_amount_subtotal_target(mapping: Mapping[str, Any]) -> tuple[str, str, s
         table, model = key
         return table, model, qty_col[key], price_col[key]
     return None
+
+
+def resolve_target_counts(
+    targets: Iterable[tuple[str, str]],
+    source_id: str,
+    names_by_model: Mapping[str, Iterable[str]],
+) -> dict[str, int]:
+    """把「每個目標模型底下所有 `migrai.` 記錄的 name」（`names_by_model`，
+    呼叫端已經用 `client.execute_kw` 查回來的原始資料）換算成
+    `assemble_checks` 要用的 `target_counts` dict：每張來源表各自數出
+    「以 `<source_id>.<table>.` 開頭」的筆數。
+
+    純函式：不碰 client，只做字串前綴的組裝與計數（委派給
+    `count_names_with_prefix`）。審查修正輪次 1 Critical C1／M57：這段
+    「用 `source_id` 與 `table` 組出 prefix 再數」的邏輯原本內嵌在
+    `cli._run_verify` 裡，prefix 被換成空字串（等於「同一個目標模型底下
+    不分 source_id、不分表，全部都算進去」）也不會被任何測試擋下；
+    搬成獨立函式後可以直接餵夾具驗證 prefix 真的有在區隔不同表／不同
+    `source_id`。
+    """
+    return {
+        table: count_names_with_prefix(
+            names_by_model.get(target_model, ()), f"{source_id}.{table}."
+        )
+        for table, target_model in targets
+    }
+
+
+def resolve_synthetic(mapping: Mapping[str, Any]) -> bool:
+    """從 `mapping.json` 讀出 `inventory_synthetic`，決定
+    `verification_report.json` 的 `synthetic` 欄位——一路從
+    `inventory.json` 傳下來（設計 spec §3.6），標記這是合成語料而非真實
+    客戶資料（D2）。找不到這個鍵時保守地當成 `False`（不是合成資料）。
+
+    純函式：抽成獨立函式而不是留在 `cli.verify_command` 裡一行
+    `bool(mapping_data.get(...))`，是因為那一行沒有任何測試守著——把它
+    寫死成 `True`（審查修正輪次 1 Critical C1／M41）不會被任何測試發現，
+    這裡直接餵 `inventory_synthetic: False` 的 mapping 驗證回傳值真的是
+    `False`。
+    """
+    return bool(mapping.get("inventory_synthetic", False))
+
+
+def assemble_checks(
+    mapping: Mapping[str, Any],
+    source_counts: Mapping[str, int],
+    target_counts: Mapping[str, int],
+    line_spec: tuple[str, str, str, str] | None,
+    source_amount: Decimal | None,
+    target_amount: Decimal | None,
+    *,
+    rounding: Decimal = VERIFICATION_ROUNDING,
+) -> list[Check]:
+    """把「已經查好的數字」組成完整的 `Check` 清單：對 `mapping` 裡的每一
+    張表做 `row_count` 比對，`line_spec` 非 `None` 時再多做一次
+    `amount_subtotal` 比對。
+
+    這是這一輪審查修正的核心：`cli._run_verify` 原本自己迴圈組 `Check`、
+    自己判斷「要不要做金額比對」，那一整段編排完全沒有測試（審查修正
+    輪次 1 Critical C1）。現在 `cli.py` 只負責呼叫 `reader`／`client`
+    湊出 `source_counts`／`target_counts`／`source_amount`／
+    `target_amount` 這幾個「已經查好的數字」，真正決定「要生出哪些
+    `Check`、每個 `Check` 的欄位對到哪個數字」全部收斂在這個純函式——
+    `source_counts[table]`／`target_counts[table]` 兩者對調（M31）、
+    `line_spec` 非 `None` 卻不生金額 check（M39）、容差用了不是
+    `VERIFICATION_ROUNDING` 的值（M42）都會被直接餵給這個函式的測試
+    釘住，不必連 Odoo 才測得到。
+
+    `source_counts`／`target_counts` 必須已經含有 `find_row_count_targets
+    (mapping)` 裡每一張表的鍵——呼叫端（`cli._run_verify`）保證這一點；
+    這裡不另外防呆補預設值 0，缺鍵時讓 `KeyError` 直接浮出比悄悄補一個
+    看起來合理但是假的 0 更誠實（原則 6）。
+    """
+    checks = [
+        compare_row_count(table, target_model, source_counts[table], target_counts[table])
+        for table, target_model in find_row_count_targets(mapping)
+    ]
+    if line_spec is not None:
+        table, target_model, _qty_column, _price_column = line_spec
+        if source_amount is None or target_amount is None:
+            raise ValueError(
+                "line_spec 非 None 時 source_amount／target_amount 必須都已提供——"
+                "呼叫端應該已經用 sum_source_amount／_target_line_amount 算好這兩個數字"
+            )
+        checks.append(
+            compare_amount(table, target_model, source_amount, target_amount, rounding=rounding)
+        )
+    return checks
+
+
+def fatal_code_for(check: Check) -> ErrorCode:
+    """依 `Check.kind` 決定失敗時要發哪個致命碼：`row_count` → E-5001
+    （TOTAL_MISMATCH）、`amount_subtotal` → E-5002（BALANCE_ERROR）——
+    spec §3.1 的退出碼契約表就是這樣寫的，兩種檢查失敗要能從錯誤碼分辨
+    是「筆數對不上」還是「金額對不上」。
+
+    審查修正輪次 1 Critical C2／M34：這個判斷原本內嵌在 `cli.
+    verify_command` 的迴圈裡，`E_5001`／`E_5002` 對調（兩種 kind 各自
+    發錯碼）不會被任何測試擋下；搬成獨立函式後可以直接對兩種 `kind`
+    各餵一個 `Check` 驗證。
+    """
+    return E_5001 if check.kind == "row_count" else E_5002
 
 
 # --------------------------------------------------------------------------
@@ -260,3 +414,26 @@ def parse_migration_log(text: str) -> list[dict[str, Any]]:
             ) from exc
         entries.append(payload)
     return entries
+
+
+def find_mismatched_external_ids(entries: Iterable[Mapping[str, Any]], *, prefix: str) -> list[str]:
+    """回傳 `entries`（`parse_migration_log` 的產出）裡 `external_id` **不是**
+    以 `prefix` 開頭的那些 external_id（依原順序，可能重複）。
+
+    審查修正輪次 1 Critical C4／控制者裁決：`--log` 原本是「幾乎無作用的
+    必填參數」——`verify_command` 印出「對照的載入紀錄」這行字暗示了一個
+    對應關係，但程式碼裡沒有任何一行真的檢查過。最低成本的守衛：`--log`
+    裡每一筆 `external_id` 都該以 `migrai.<source_id>.` 開頭（`planner.
+    build_external_id` 的字面契約），不符代表這份 log 根本不是這次
+    `--source-id` 對應的那次載入——純字串比對，不需要連 Odoo。
+
+    刻意不在這裡把 `"migrai."` 這個 module 段寫死：呼叫端（`cli.py`）已經
+    有 `_MIGRAI_MODULE` 這個常數，`prefix` 由呼叫端組好（`f"{_MIGRAI_MODULE}.
+    {source_id}."`）再傳進來，這個函式只管字串比對，不重複假設模組前綴
+    的字面值。
+    """
+    return [
+        str(entry.get("external_id", ""))
+        for entry in entries
+        if not str(entry.get("external_id", "")).startswith(prefix)
+    ]

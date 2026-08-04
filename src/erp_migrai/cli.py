@@ -18,6 +18,7 @@ import os
 import sys
 import uuid
 from collections import Counter
+from collections.abc import Iterable
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from typing import Any
 import typer
 
 from erp_migrai import __version__
-from erp_migrai.events import E_5001, E_5002, EventLog, Stage
+from erp_migrai.events import EventLog, Stage
 from erp_migrai.inventory.extractor import ScanFailed, write_inventory
 from erp_migrai.inventory.extractor import scan as run_scan
 from erp_migrai.mapping.catalog import CatalogError
@@ -35,17 +36,27 @@ from erp_migrai.mapping.rules_loader import RuleError
 from erp_migrai.mapping.writer import MappingSchemaError, MappingSerializationError
 from erp_migrai.pipeline.loader import LogEntrySchemaError, run_load
 from erp_migrai.pipeline.odoo_client import OdooClient, OdooError
-from erp_migrai.pipeline.report import build_report, render_markdown
+from erp_migrai.pipeline.report import (
+    ReportSchemaError,
+    build_report,
+    render_markdown,
+    validate_report,
+)
 from erp_migrai.pipeline.source import SourceError, SourceReader, SqliteSourceReader
 from erp_migrai.pipeline.verify import (
+    TARGET_LINE_AMOUNT_FIELD,
     Check,
     MigrationLogReadError,
-    compare_amount,
-    compare_row_count,
-    count_names_with_prefix,
+    assemble_checks,
+    fatal_code_for,
     find_amount_subtotal_target,
+    find_mismatched_external_ids,
     find_row_count_targets,
+    ir_model_data_domain,
     parse_migration_log,
+    res_ids_with_prefix,
+    resolve_synthetic,
+    resolve_target_counts,
     sum_source_amount,
     sum_target_amount,
 )
@@ -70,11 +81,6 @@ VERIFICATION_REPORT_MD_FILENAME = "verification_report.md"
 # 的 `_MODULE` 常數（那份是 private，不建議跨模組 import 底線名稱），這裡
 # 依同樣的既有慣例（同一字面值分散在需要它的模組各自宣告）再宣告一份。
 _MIGRAI_MODULE = "migrai"
-
-# 金額比對的容差：Odoo 預設幣別（TWD／USD）最小單位皆為分，0.01 是貨幣捨入
-# 誤差的合理容差，不是拍腦袋（設計 spec §3.6：「容差為 Odoo 的幣別
-# rounding（0.01）」）。
-VERIFICATION_ROUNDING = Decimal("0.01")
 
 
 def _fresh_event_log(out_dir: Path) -> EventLog:
@@ -465,18 +471,39 @@ def load_command(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_source_counts(
+    reader: SourceReader, targets: Iterable[tuple[str, str]]
+) -> dict[str, int]:
+    """對 `targets` 裡每一張來源表呼叫 `reader.count()`，組成 `assemble_
+    checks` 要用的 `source_counts` dict。
+
+    🔴 審查修正輪次 1 Critical C1／M61：`source_count` 的定義是「來源表
+    的總筆數」，唯一合法的來源是 `SourceReader.count()`——絕不可以用
+    `migration_log.jsonl` 裡「非 failed 的列數」代替（見 `verify.
+    compare_row_count` docstring 的地雷說明：那樣會讓分子分母一起消失，
+    正是計劃 2 那個 Critical 的形狀）。這個函式的簽章刻意只吃 `reader`，
+    不吃任何 log／log 相關的參數——想犯「錯用 log 當分母」這個錯誤，寫的
+    人得先幫這個函式的簽章多加一個參數，而不是能在函式內部悄悄改一行
+    就把地雷埋回去。抽成獨立、可以直接 import 測試的函式（precedent：
+    `loader.run_load` 對 `_run_verify` 整段編排零測試這個同型缺陷的
+    解法）。
+    """
+    return {table: reader.count(table) for table, _ in targets}
+
+
 def _target_names(client: OdooClient, *, target_model: str) -> list[str]:
     """查一次 `ir.model.data`，回傳這個目標模型底下所有 `migrai.` module
     的 `name`（已去掉 module 前綴）。
 
-    只做查詢、只回傳原始資料——`count_names_with_prefix` 才是真正的比對
-    邏輯，那個函式住在 `verify.py`。`rows` 形狀不如預期（RPC 層本身沒有
-    任何型別保證）一律回傳空清單，不讓裸 `TypeError`／`KeyError` 逃出去。
+    只做查詢、只回傳原始資料——`count_names_with_prefix`／`resolve_
+    target_counts` 才是真正的比對邏輯，那些函式住在 `verify.py`。`rows`
+    形狀不如預期（RPC 層本身沒有任何型別保證）一律回傳空清單，不讓裸
+    `TypeError`／`KeyError` 逃出去。
     """
     rows = client.execute_kw(
         "ir.model.data",
         "search_read",
-        [[["module", "=", _MIGRAI_MODULE], ["model", "=", target_model]]],
+        [ir_model_data_domain(module=_MIGRAI_MODULE, target_model=target_model)],
         {"fields": ["name"]},
     )
     if not isinstance(rows, list):
@@ -490,9 +517,12 @@ def _target_line_amount(
     """查出這個來源表（依 `migrai.<source_id>.<table>.` 前綴辨認）在 Odoo
     裡對應記錄的 `price_subtotal` 合計。
 
-    分兩步：先查 `ir.model.data` 拿到符合前綴的 `res_id` 清單，再用那些
-    id 去讀真正的 `price_subtotal` 欄位（`ir.model.data` 本身不帶業務
-    欄位）。沒有任何一筆符合前綴時回傳 `Decimal("0")`，不特別呼叫
+    分兩步：先查 `ir.model.data` 拿到符合前綴的 `res_id` 清單（過濾邏輯
+    委派給 `verify.res_ids_with_prefix`——跟 `_target_names` 用的
+    `count_names_with_prefix` 是同一套字串比對，不在這裡重寫一遍），再用
+    那些 id 去讀真正的欄位（`ir.model.data` 本身不帶業務欄位；讀哪個
+    欄位由 `verify.TARGET_LINE_AMOUNT_FIELD` 這個常數決定，不在這裡另外
+    寫死字面值）。沒有任何一筆符合前綴時回傳 `Decimal("0")`，不特別呼叫
     `read([])`——Odoo 的 `read` 對空 id 清單雖然合法（回傳空 list），但
     省一次沒有意義的 RPC。
     """
@@ -500,19 +530,17 @@ def _target_line_amount(
     rows = client.execute_kw(
         "ir.model.data",
         "search_read",
-        [[["module", "=", _MIGRAI_MODULE], ["model", "=", target_model]]],
+        [ir_model_data_domain(module=_MIGRAI_MODULE, target_model=target_model)],
         {"fields": ["name", "res_id"]},
     )
     if not isinstance(rows, list):
         return Decimal("0")
-    res_ids = [
-        row["res_id"]
-        for row in rows
-        if isinstance(row, dict) and str(row.get("name", "")).startswith(prefix)
-    ]
+    res_ids = res_ids_with_prefix((row for row in rows if isinstance(row, dict)), prefix)
     if not res_ids:
         return Decimal("0")
-    records = client.execute_kw(target_model, "read", [res_ids], {"fields": ["price_subtotal"]})
+    records = client.execute_kw(
+        target_model, "read", [res_ids], {"fields": [TARGET_LINE_AMOUNT_FIELD]}
+    )
     if not isinstance(records, list):
         return Decimal("0")
     return sum_target_amount(records)
@@ -525,21 +553,22 @@ def _run_verify(
     另外對明細表（若找得到 `product_uom_qty`／`price_unit` 這組欄位）多做
     一次 `amount_subtotal` 比對。
 
-    這是這個檔案裡唯一會呼叫 `client` 的函式（連同上面兩個 `_target_*`
-    helper）；「哪些表要查什麼」「查回來的數字算 pass 還是 fail」全部
-    委派給 `verify.py` 的純函式（`find_row_count_targets`／
-    `find_amount_subtotal_target`／`compare_row_count`／`compare_amount`／
-    `sum_source_amount`），這裡不重新判斷任何比對邏輯。
+    這是這個檔案裡唯一會呼叫 `client` 的函式（連同上面幾個 helper）；
+    這裡只負責「呼叫 `reader`／`client` 湊出幾個已經查好的數字」，真正
+    「哪些表要查什麼」「查回來的數字組成哪些 `Check`」全部委派給
+    `verify.assemble_checks`——這個函式本身不再判斷任何比對邏輯（審查
+    修正輪次 1 Critical C1：原本這整段編排零測試，`assemble_checks`
+    抽出去之後才測得到）。
     """
-    checks: list[Check] = []
-    for table, target_model in find_row_count_targets(mapping_data):
-        source_count = reader.count(table)
-        target_count = count_names_with_prefix(
-            _target_names(client, target_model=target_model), f"{source_id}.{table}."
-        )
-        checks.append(compare_row_count(table, target_model, source_count, target_count))
+    targets = find_row_count_targets(mapping_data)
+    source_counts = _resolve_source_counts(reader, targets)
+    models = sorted({target_model for _, target_model in targets})
+    names_by_model = {model: _target_names(client, target_model=model) for model in models}
+    target_counts = resolve_target_counts(targets, source_id, names_by_model)
 
     line_spec = find_amount_subtotal_target(mapping_data)
+    source_amount: Decimal | None = None
+    target_amount: Decimal | None = None
     if line_spec is not None:
         table, target_model, qty_column, price_column = line_spec
         source_amount = sum_source_amount(
@@ -548,12 +577,25 @@ def _run_verify(
         target_amount = _target_line_amount(
             client, source_id=source_id, table=table, target_model=target_model
         )
-        checks.append(
-            compare_amount(
-                table, target_model, source_amount, target_amount, rounding=VERIFICATION_ROUNDING
-            )
-        )
-    return checks
+
+    return assemble_checks(
+        mapping_data, source_counts, target_counts, line_spec, source_amount, target_amount
+    )
+
+
+def write_reports(report: dict[str, Any], *, json_path: Path, md_path: Path) -> None:
+    """把 `report`（`build_report` 的輸出，已通過 `validate_report`）寫成
+    `verification_report.json`／`.md` 兩份檔案。
+
+    抽成獨立、可以直接 import 測試的函式（審查修正輪次 1 Critical C2 的
+    部分覆蓋）：這裡完全沒有分支——「報告永遠先寫出，才判斷 exit code」
+    這個契約（即使 `checks` 全部 `fail`）可以脫離 Odoo 連線單獨驗證：
+    餵一份 `summary.failed > 0` 的 `report` 進來，確認兩個檔案還是照樣
+    寫出去。真正端到端（透過 `migrai verify` 連上會回報失敗檢查的 Odoo）
+    留給 Task 12。
+    """
+    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    md_path.write_text(render_markdown(report), encoding="utf-8")
 
 
 @app.command(name="verify")
@@ -640,6 +682,22 @@ def verify_command(
         typer.echo(f"✗ --log {log} 不是合法的 migration_log.jsonl：{exc}")
         raise typer.Exit(code=1) from exc
 
+    # 🔴 審查修正輪次 1 Critical C4／控制者裁決：--log 原本是幾乎無作用的
+    # 必填參數——stdout 印出「對照的載入紀錄」暗示了一個對應關係，卻沒有
+    # 任何一行真的檢查過。這裡補最低成本的守衛：--log 裡每一筆
+    # external_id 都該以 `migrai.<source_id>.` 開頭（`planner.
+    # build_external_id` 的字面契約），不符代表這份 log 根本不是這次
+    # --source-id 對應的那次載入。純字串比對，在連線 Odoo 之前就能擋下。
+    mismatched = find_mismatched_external_ids(log_entries, prefix=f"{_MIGRAI_MODULE}.{source_id}.")
+    if mismatched:
+        sample = "、".join(mismatched[:5])
+        typer.echo(
+            f"✗ --log {log} 與 --source-id {source_id} 不符：以下 external_id "
+            f"沒有 {_MIGRAI_MODULE}.{source_id}. 前綴（僅列前 5 筆，共 {len(mismatched)} 筆）："
+            f"{sample}"
+        )
+        raise typer.Exit(code=1)
+
     try:
         mapping_text = mapping.read_text(encoding="utf-8")
     except OSError as exc:
@@ -671,27 +729,36 @@ def verify_command(
         # 寫出一份報告只會是全部欄位都缺失或是假數字，比不寫更容易誤導
         # 使用者。這與「檢查真的跑完但結果是 fail」不同，那種情況一定要
         # 寫報告（見下方，report 一律在决定 exit code 之前寫出）。
-        typer.echo(f"✗ 連線 Odoo 失敗：{exc}")
+        # `exc` 的訊息本身在多數連線失敗情境下已經含「連線 Odoo 失敗：」
+        # （見 odoo_client.py 的 `_send()`），這裡不再疊加一次相同前綴。
+        typer.echo(f"✗ {exc}")
         raise typer.Exit(code=1) from exc
 
-    synthetic = bool(mapping_data.get("inventory_synthetic", False))
+    synthetic = resolve_synthetic(mapping_data)
     report = build_report(checks, source_id=source_id, synthetic=synthetic)
+
+    # 🔴 審查修正輪次 1 Critical C4：寫出前先驗證這份 report 符合
+    # verification_report.schema.json——比照 loader._validate_and_dump
+    # 對 migration_log.schema.json 的做法，不讓 build_report 自己的缺陷
+    # 悄悄寫出一份違反 schema 的檔案。
+    try:
+        validate_report(report)
+    except ReportSchemaError as exc:
+        typer.echo(f"✗ {exc}")
+        raise typer.Exit(code=1) from exc
 
     json_path = out / VERIFICATION_REPORT_JSON_FILENAME
     md_path = out / VERIFICATION_REPORT_MD_FILENAME
     try:
         # 🔴 報告永遠先寫出，才判斷 exit code——即使 checks 全部 fail。
-        json_path.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        md_path.write_text(render_markdown(report), encoding="utf-8")
+        write_reports(report, json_path=json_path, md_path=md_path)
     except OSError as exc:
         typer.echo(f"✗ 無法寫入產出目錄 {out}：{exc}")
         raise typer.Exit(code=1) from exc
 
     for check in checks:
         if check.status == "fail":
-            code = E_5001 if check.kind == "row_count" else E_5002
+            code = fatal_code_for(check)
             event_log.emit(
                 "verify.check_failed",
                 code=code,

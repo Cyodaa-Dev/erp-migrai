@@ -4,15 +4,42 @@ P3-3（設計 spec）：`verification_report.json` 是唯一事實來源，`.md`
 **完全由它渲染**——測試斷言 JSON，不用正規表示式抓 markdown（後者極容易
 變成「什麼都沒檢查到卻亮綠燈」的空守衛）。`render_markdown` 因此只讀
 `build_report` 產出的（或從磁碟讀回的同形狀）dict，不重新計算任何數字。
+
+## `validate_report`：寫出前的最後一道防線
+
+審查修正輪次 1 Critical C4：`verification_report.schema.json` 原本完全
+沒有接線——runtime 從不驗證，`test_verification_report_schema.py` 的 36
+條測試驗的是一份手寫夾具，不是 `build_report()` 真正的產出，`build_report`
+若不小心在某個 kind 多吐一個 schema 禁止的鍵，不會有任何測試發現。
+`validate_report` 補上這一關（precedent：`loader._validate_and_dump`
+對 `migration_log.schema.json` 的關係），`cli.verify_command` 在寫檔前
+呼叫它。
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
+
+from jsonschema import Draft202012Validator, ValidationError
 
 from erp_migrai.pipeline.verify import Check
 
 SCHEMA_VERSION = "1.0"
+
+_SCHEMA_PATH = Path(__file__).parent / "schema" / "verification_report.schema.json"
+_SCHEMA = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+_VALIDATOR = Draft202012Validator(_SCHEMA)
+
+
+class ReportSchemaError(Exception):
+    """`build_report` 組出的內容不符合 `verification_report.schema.json`。
+
+    這是 `report.py` 自己的缺陷，不是使用者輸入的問題（precedent：
+    `loader.LogEntrySchemaError`）——`build_report` 的輸入是型別已知的
+    `list[Check]`，不會有「使用者餵了壞資料」這種情境。
+    """
 
 
 def build_report(checks: list[Check], *, source_id: str, synthetic: bool) -> dict[str, Any]:
@@ -50,6 +77,24 @@ def build_report(checks: list[Check], *, source_id: str, synthetic: bool) -> dic
         ],
         "summary": {"total": total, "passed": passed, "failed": failed},
     }
+
+
+def validate_report(report: dict[str, Any]) -> None:
+    """驗證 `report`（`build_report` 的輸出）符合
+    `verification_report.schema.json`；不合法時拋 `ReportSchemaError`。
+
+    `cli.verify_command` 在把 `report` 寫成 JSON／md 之前呼叫這個函式
+    （precedent：`loader._validate_and_dump` 在寫出每一筆 `migration_log`
+    記錄之前先驗證）。純函式：只驗證、不寫檔，回傳 `None` 代表通過。
+    """
+    try:
+        _VALIDATOR.validate(report)
+    except ValidationError as exc:
+        raise ReportSchemaError(
+            "build_report 組出的 verification_report 不符合 "
+            f"verification_report.schema.json（這是 report.py 的缺陷，"
+            f"不是你的輸入有問題，請回報 issue）：{exc.message}"
+        ) from exc
 
 
 def render_markdown(report: dict[str, Any]) -> str:
