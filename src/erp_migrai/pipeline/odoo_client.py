@@ -58,6 +58,7 @@ docstring 就是那個紀律的文件化，不是「每條路徑都已經被想�
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -308,13 +309,21 @@ class OdooClient:
         訊息就是另一條密碼外洩路徑。
         """
         try:
-            return json.loads(raw)
+            body = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise OdooError(
                 f"Odoo 回應不是合法 JSON（{len(raw)} bytes，解析失敗於位置 {exc.pos}）"
             ) from None
+        # 合法 JSON 但不是物件（`null`／陣列／字串／數字）同樣要在這裡收斂：
+        # 下游一律 `body.get(...)`，非 dict 會噴裸 `AttributeError`。最外層
+        # 這一層恰好是最可能被中介（反向代理、WAF、企業防火牆的攔截頁）
+        # 控制的，回一個 `null` 或 JSON 陣列並不罕見。同理，型別名稱可以進
+        # 訊息，內容不行。
+        if not isinstance(body, dict):
+            raise OdooError(f"Odoo 回應不是 JSON-RPC 物件（收到 {type(body).__name__}）")
+        return body
 
-    def _map_connection_error(self, exc: urllib.error.URLError) -> None:
+    def _map_connection_error(self, exc: BaseException) -> None:
         """把 `urlopen` 丟出的連線層例外轉成 `OdooError` 家族之一。
 
         `HTTPError` 是 `URLError` 的子類別，這裡用單一 `isinstance`
@@ -332,9 +341,27 @@ class OdooClient:
             # 把 self.password 塞進這裡任何字串。
             self._raise_for_http_status(exc.code, exc.reason or "")
             return
-        # exc.reason 是連線層失敗原因（DNS 解析失敗、連線被拒絕、逾時
-        # ……），不含任何請求內容，也不含 self.password。
-        raise OdooError(f"連線 Odoo 失敗：{exc.reason}") from None
+        if isinstance(exc, urllib.error.URLError):
+            # exc.reason 是連線層失敗原因（DNS 解析失敗、連線被拒絕、送出
+            # 請求階段逾時……），不含任何請求內容，也不含 self.password。
+            raise OdooError(f"連線 Odoo 失敗：{exc.reason}") from None
+        # 🔴 逾時**不一定**是 URLError。CPython 的
+        # `urllib.request.AbstractHTTPHandler.do_open` 只把「送出請求」那一段
+        # 包起來（`except OSError as err: raise URLError(err)`），緊接著的
+        # `r = h.getresponse()` 與後續的 `response.read()` 都在那個 try 之外
+        # ——它們逾時時拋的是裸 `TimeoutError`（`socket.timeout is
+        # TimeoutError`），而 `TimeoutError` 不是 `URLError` 的子類別。
+        #
+        # 而「TCP 連得上、應用層不回」——也就是 timeout 欄位註解自己寫的那個
+        # 情境——保證連線與送出都成功、卡在 getresponse()，也就保證走到這一條。
+        # 少了這個分支，加了 timeout 只解決「不會無限期掛住」，沒解決「掛住
+        # 之後要能被 Task 11 接住並轉成 E-4001」。
+        #
+        # 回應本文被截斷則是 `http.client.IncompleteRead`（`HTTPException` 那
+        # 一支，同樣不是 URLError）。兩者都在這裡收斂。
+        # 訊息只帶例外類別名稱：`str(TimeoutError)` 之類的內容由連線層決定，
+        # 不含請求內容，但類別名稱已足夠定位，也絕不含 self.password。
+        raise OdooError(f"連線 Odoo 失敗：{type(exc).__name__}") from None
 
     def _send(self, payload: dict[str, Any]) -> dict[str, Any]:
         """把 `payload` POST 到 `{url}/jsonrpc`，回傳解析後的 JSON body。
@@ -360,10 +387,16 @@ class OdooClient:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310
                 raw = response.read()
-        except urllib.error.URLError as exc:
+        except (OSError, http.client.HTTPException) as exc:
+            # 攔截範圍刻意比 `urllib.error.URLError` 寬：`URLError` 本身就是
+            # `OSError` 的子類別，而 `TimeoutError`（等回應／讀本文階段逾時）
+            # 也是 `OSError`、卻**不是** `URLError`；`IncompleteRead`
+            # （回應被截斷）則在 `HTTPException` 那一支。只接 `URLError` 會
+            # 讓這兩種漏出去變成 Task 11 接不住的裸例外——見
+            # `_map_connection_error` 的說明。
             self._map_connection_error(exc)
             raise AssertionError(
-                "unreachable：_map_connection_error 兩個分支都必定拋例外"
+                "unreachable：_map_connection_error 三個分支都必定拋例外"
             ) from None
         return self._parse_response(raw)
 

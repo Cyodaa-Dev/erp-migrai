@@ -35,6 +35,7 @@ fixture 一律用 `"s3cret"` 而非任一字元的值——像 `"p"` 這種短�
 from __future__ import annotations
 
 import ast
+import http.client
 import urllib.error
 from pathlib import Path
 
@@ -277,13 +278,25 @@ def test_raise_for_error_access_denied_becomes_odoo_auth_error():
     assert type(exc.value) is OdooAuthError
 
 
-def test_raise_for_error_user_error_stays_plain_odoo_error():
-    """反例：普通 `UserError` 不該被誤判成 `OdooAuthError`。"""
+@pytest.mark.parametrize(
+    "name",
+    [
+        "odoo.exceptions.UserError",
+        # 複驗 Nit 1：判斷寫的是 `endswith("AccessDenied")`，若有人「順手」
+        # 改成 `in`，這個名稱就會被誤判成認證失敗。分辨得出後綴比對與子字串
+        # 比對，這條反例才守得住它宣稱的東西。
+        "odoo.exceptions.AccessDeniedFoo",
+        # AccessError 是「權限不足」不是「認證失敗」——叫使用者去改帳密沒有用。
+        "odoo.exceptions.AccessError",
+    ],
+)
+def test_raise_for_error_non_access_denied_stays_plain_odoo_error(name):
+    """反例：只有真正的 `AccessDenied` 才升級成 `OdooAuthError`。"""
     client = _client()
     body = {
         "error": {
             "message": "Odoo Server Error",
-            "data": {"name": "odoo.exceptions.UserError", "message": "統一編號重複"},
+            "data": {"name": name, "message": "統一編號重複"},
         }
     }
     with pytest.raises(OdooError) as exc:
@@ -399,12 +412,46 @@ def test_map_connection_error_plain_url_error_is_odoo_error():
     `URLError` 那個分支，一樣要落在 `OdooError`，不能誤判成
     `RateLimited`。
     """
-    client = _client()
+    client = _client(password=PASSWORD)
     exc = urllib.error.URLError("Connection refused")
     with pytest.raises(OdooError) as exc_info:
         client._map_connection_error(exc)
     assert not isinstance(exc_info.value, RateLimited)
     assert "Connection refused" in str(exc_info.value)
+    # 複驗 Minor 2：`HTTPError` 分支有密碼守衛、這一支沒有，上一輪只修了一半。
+    assert PASSWORD not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TimeoutError("timed out"),
+        http.client.IncompleteRead(b""),
+    ],
+    ids=["timeout", "incomplete_read"],
+)
+def test_map_connection_error_non_url_error_failures_still_become_odoo_error(exc):
+    """🔴 逾時**不一定**是 `URLError`——而逾時正是加上 `timeout` 要處理的那件事。
+
+    CPython 的 `urllib.request.AbstractHTTPHandler.do_open` 只把「送出請求」
+    那一段包起來（`except OSError as err: raise URLError(err)`），緊接著的
+    `r = h.getresponse()` 與後續的 `response.read()` 都在那個 try 之外——
+    它們逾時時拋的是裸 `TimeoutError`（`socket.timeout is TimeoutError`），
+    而 `TimeoutError` **不是** `URLError` 的子類別（實測 `issubclass` 為
+    `False`，但它是 `OSError` 的子類別）。回應本文被截斷則是
+    `http.client.IncompleteRead`，在 `HTTPException` 那一支。
+
+    關鍵在於觸發情境：`timeout` 欄位註解自己寫的是「Odoo 半死不活（TCP
+    連得上、應用層不回）」——那保證連線與送出都成功、卡在 `getresponse()`，
+    也就保證走到不被包裝的那一條。少了這個分支，加上 timeout 只解決了
+    「不會無限期掛住」，沒解決「掛住之後要能被 Task 11 接住並轉成 E-4001」。
+    """
+    client = _client(password=PASSWORD)
+    with pytest.raises(OdooError) as exc_info:
+        client._map_connection_error(exc)
+    assert not isinstance(exc_info.value, RateLimited)
+    assert type(exc).__name__ in str(exc_info.value)
+    assert PASSWORD not in str(exc_info.value)
 
 
 # --------------------------------------------------------------------------
@@ -433,6 +480,22 @@ def test_endpoint_appends_jsonrpc_to_base_url(url, expected):
 def test_parse_response_returns_parsed_dict_on_valid_json():
     client = _client()
     assert client._parse_response(b'{"result": 1}') == {"result": 1}
+
+
+@pytest.mark.parametrize("raw", [b"null", b"[1,2]", b'"hello"', b"123"], ids=list("nlsi"))
+def test_parse_response_non_object_body_is_odoo_error_not_attribute_error(raw):
+    """合法 JSON 但不是物件時也要落在 `OdooError`。
+
+    複驗 Minor 4：`_raise_for_error` 內部已經硬化過 `error`／`data` 非 dict
+    的情形，但**最外層的 body 反而沒有**——而最外層恰好是最可能被中介
+    （反向代理、WAF、企業防火牆的攔截頁）控制的那一層，回一個 `null` 或
+    JSON 陣列並不罕見。沒有這個檢查的話，下游 `body.get(...)` 會噴裸
+    `AttributeError`，又是一條逃出職責契約的路徑。
+    """
+    client = _client()
+    with pytest.raises(OdooError) as exc_info:
+        client._parse_response(raw)
+    assert "JSON-RPC" in str(exc_info.value)
 
 
 def test_parse_response_wraps_json_decode_error_as_odoo_error():
@@ -489,6 +552,88 @@ def test_send_passes_self_timeout_to_urlopen():
     (timeout_kw,) = timeout_kwargs
     assert isinstance(timeout_kw.value, ast.Attribute)
     assert timeout_kw.value.attr == "timeout"
+
+
+def test_send_builds_its_request_url_via_endpoint_not_raw_url():
+    """`_send` 必須經由 `self._endpoint()` 取得端點，不可以直接用 `self.url`。
+
+    複驗 Minor 3：scheme 檢查與 `/jsonrpc` 組裝都住在 `_endpoint()` 裡、也都被
+    測試殺得很乾淨，**但「把守衛接上去」的那一行仍在唯一沒有測試的網路層**
+    ——把 `endpoint = self._endpoint()` 改回 `endpoint = self.url`，兩個守衛
+    同時失效，卻沒有任何測試會紅。這是控制者剛抓到的「守衛量不準」的殘影：
+    守衛的**內容**可測了，**接線**還沒有。
+
+    沿用上面那條 timeout 測試的手法靜態檢查，不碰網路。
+    """
+    src_root = Path(__file__).resolve().parents[2] / "src" / "erp_migrai"
+    path = src_root / "pipeline" / "odoo_client.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    send = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_send"
+    )
+    endpoint_calls = [
+        node
+        for node in ast.walk(send)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_endpoint"
+    ]
+    assert len(endpoint_calls) == 1, "_send 必須呼叫 self._endpoint() 恰好一次"
+    # 而且 Request() 的網址引數要是 _endpoint() 的結果，不是 self.url。
+    request_calls = [
+        node
+        for node in ast.walk(send)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Request"
+    ]
+    assert len(request_calls) == 1
+    (request_call,) = request_calls
+    url_arg = request_call.args[0]
+    assert isinstance(url_arg, ast.Name), "Request 的第一個引數應該是 _endpoint() 綁定的變數"
+    assigned = [
+        target.id
+        for node in ast.walk(send)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "_endpoint"
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    ]
+    assert url_arg.id in assigned, "Request 用的網址不是來自 self._endpoint()"
+
+
+def test_send_catches_oserror_and_httpexception_not_just_urlerror():
+    """`_send` 的 `except` 必須寬到接得住 `TimeoutError` 與 `IncompleteRead`。
+
+    🔴 這條與 `test_map_connection_error_non_url_error_failures_still_become_odoo_error`
+    是**兩件事**，缺一不可——控制者實測過：把 `_send` 的 `except` 縮回
+    `urllib.error.URLError`，那條測試**仍然全綠**，因為它直接呼叫
+    `_map_connection_error`，而 `TimeoutError` 在真實路徑上**根本到不了它**。
+
+    這是這個任務第三次撞到同一個形狀：守衛的**內容**可測（純函式），但
+    **接線**留在唯一沒有測試的網路層。前兩次是 scheme 守衛放錯層、
+    `_endpoint()` 的呼叫沒被釘住。靜態檢查 `except` 子句攔的是哪些型別，
+    不碰網路。
+    """
+    src_root = Path(__file__).resolve().parents[2] / "src" / "erp_migrai"
+    path = src_root / "pipeline" / "odoo_client.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    send = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_send"
+    )
+    handlers = [node for node in ast.walk(send) if isinstance(node, ast.ExceptHandler)]
+    assert len(handlers) == 1
+    caught = ast.unparse(handlers[0].type)
+    # `URLError` 本身是 `OSError` 的子類別，所以接 `OSError` 就涵蓋了它；
+    # 但反過來不成立——這正是要釘住的方向。
+    assert "OSError" in caught, f"_send 的 except 只接了 {caught}，接不住 TimeoutError"
+    assert "HTTPException" in caught, f"_send 的 except 只接了 {caught}，接不住 IncompleteRead"
 
 
 # --------------------------------------------------------------------------
