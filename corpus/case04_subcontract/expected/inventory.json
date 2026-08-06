@@ -1,0 +1,561 @@
+{
+  "synthetic": true,
+  "schema_version": "1.0",
+  "database": "ds",
+  "source_files": [
+    "schema.sql",
+    "sub_maintain.4gl"
+  ],
+  "tables": [
+    {
+      "name": "item_mast",
+      "columns": [
+        {
+          "name": "item_no",
+          "type": "CHAR(20)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "item_name",
+          "type": "VARCHAR(80)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "item_spec",
+          "type": "VARCHAR(120)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "item_price",
+          "type": "DECIMAL(15,4)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "item_cost",
+          "type": "DECIMAL(15,4)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "item_kind",
+          "type": "CHAR(2)",
+          "nullable": true,
+          "default": "FG"
+        },
+        {
+          "name": "item_hits",
+          "type": "INTEGER",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "item_life",
+          "type": "INTEGER",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "item_stus",
+          "type": "CHAR(1)",
+          "nullable": true,
+          "default": "Y"
+        }
+      ],
+      "primary_key": [
+        "item_no"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "name": "sub_deta",
+      "columns": [
+        {
+          "name": "sub_no",
+          "type": "CHAR(16)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "sub_seq",
+          "type": "SMALLINT",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "sub_item_no",
+          "type": "CHAR(20)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "sub_wc_no",
+          "type": "CHAR(12)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "sub_qty",
+          "type": "DECIMAL(15,4)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "sub_price",
+          "type": "DECIMAL(15,4)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "sub_eta",
+          "type": "VARCHAR(40)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "sub_trial",
+          "type": "SMALLINT",
+          "nullable": true,
+          "default": "0"
+        }
+      ],
+      "primary_key": [
+        "sub_no",
+        "sub_seq"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "sub_no"
+          ],
+          "ref_table": "sub_ord",
+          "ref_columns": [
+            "sub_no"
+          ]
+        },
+        {
+          "columns": [
+            "sub_item_no"
+          ],
+          "ref_table": "item_mast",
+          "ref_columns": [
+            "item_no"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sub_ord",
+      "columns": [
+        {
+          "name": "sub_no",
+          "type": "CHAR(16)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "sub_vend_no",
+          "type": "CHAR(10)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "sub_wo_no",
+          "type": "CHAR(16)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "sub_date",
+          "type": "DATE",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "sub_memo",
+          "type": "VARCHAR(200)",
+          "nullable": true,
+          "default": null
+        }
+      ],
+      "primary_key": [
+        "sub_no"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "sub_vend_no"
+          ],
+          "ref_table": "vend_mast",
+          "ref_columns": [
+            "vend_no"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "vend_mast",
+      "columns": [
+        {
+          "name": "vend_no",
+          "type": "CHAR(10)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "vend_name",
+          "type": "VARCHAR(60)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "vend_ubn",
+          "type": "CHAR(8)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "vend_tel",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "vend_addr",
+          "type": "VARCHAR(120)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "vend_proc",
+          "type": "VARCHAR(40)",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "vend_stus",
+          "type": "CHAR(1)",
+          "nullable": true,
+          "default": "Y"
+        }
+      ],
+      "primary_key": [
+        "vend_no"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "name": "wc_mast",
+      "columns": [
+        {
+          "name": "wc_no",
+          "type": "CHAR(12)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "wc_name",
+          "type": "VARCHAR(60)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "wc_rate",
+          "type": "DECIMAL(15,4)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "wc_outs",
+          "type": "CHAR(1)",
+          "nullable": true,
+          "default": "N"
+        }
+      ],
+      "primary_key": [
+        "wc_no"
+      ],
+      "foreign_keys": []
+    },
+    {
+      "name": "wo_mast",
+      "columns": [
+        {
+          "name": "wo_no",
+          "type": "CHAR(16)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "wo_item_no",
+          "type": "CHAR(20)",
+          "nullable": false,
+          "default": null
+        },
+        {
+          "name": "wo_qty",
+          "type": "DECIMAL(15,4)",
+          "nullable": true,
+          "default": "0"
+        },
+        {
+          "name": "wo_date",
+          "type": "DATE",
+          "nullable": true,
+          "default": null
+        },
+        {
+          "name": "wo_stus",
+          "type": "CHAR(2)",
+          "nullable": true,
+          "default": "10"
+        }
+      ],
+      "primary_key": [
+        "wo_no"
+      ],
+      "foreign_keys": [
+        {
+          "columns": [
+            "wo_item_no"
+          ],
+          "ref_table": "item_mast",
+          "ref_columns": [
+            "item_no"
+          ]
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "kind": "GLOBALS",
+      "name": null,
+      "file": "sub_maintain.4gl",
+      "start_line": 13,
+      "end_line": 16,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "g_user",
+          "type": "CHAR(10)",
+          "line": 14
+        },
+        {
+          "name": "g_plant",
+          "type": "CHAR(4)",
+          "line": 15
+        }
+      ],
+      "sql": [],
+      "unsupported": []
+    },
+    {
+      "kind": "MAIN",
+      "name": null,
+      "file": "sub_maintain.4gl",
+      "start_line": 18,
+      "end_line": 22,
+      "parse_status": "ok",
+      "definitions": [],
+      "sql": [],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "sub_maintain",
+      "file": "sub_maintain.4gl",
+      "start_line": 24,
+      "end_line": 41,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "l_cnt",
+          "type": "INTEGER",
+          "line": 25
+        }
+      ],
+      "sql": [
+        {
+          "kind": "SELECT",
+          "tables": [
+            "sub_ord"
+          ],
+          "line": 27
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "sub_insert",
+      "file": "sub_maintain.4gl",
+      "start_line": 43,
+      "end_line": 60,
+      "parse_status": "partial",
+      "definitions": [
+        {
+          "name": "l_ord",
+          "type": "RECORD LIKE sub_ord.*",
+          "line": 47
+        },
+        {
+          "name": "l_det",
+          "type": "RECORD LIKE sub_deta.*",
+          "line": 48
+        }
+      ],
+      "sql": [
+        {
+          "kind": "INSERT",
+          "tables": [
+            "sub_ord"
+          ],
+          "line": 52
+        },
+        {
+          "kind": "INSERT",
+          "tables": [
+            "sub_deta"
+          ],
+          "line": 57
+        }
+      ],
+      "unsupported": [
+        {
+          "file": "sub_maintain.4gl",
+          "line": 45,
+          "snippet": "DEFER INTERRUPT",
+          "reason": "無法辨識的語句關鍵字"
+        }
+      ]
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "sub_update_eta",
+      "file": "sub_maintain.4gl",
+      "start_line": 62,
+      "end_line": 73,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "l_no",
+          "type": "CHAR(16)",
+          "line": 64
+        },
+        {
+          "name": "l_seq",
+          "type": "SMALLINT",
+          "line": 65
+        },
+        {
+          "name": "l_eta",
+          "type": "VARCHAR(40)",
+          "line": 66
+        }
+      ],
+      "sql": [
+        {
+          "kind": "UPDATE",
+          "tables": [
+            "sub_deta"
+          ],
+          "line": 70
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "sub_delete",
+      "file": "sub_maintain.4gl",
+      "start_line": 75,
+      "end_line": 82,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "l_no",
+          "type": "CHAR(16)",
+          "line": 76
+        }
+      ],
+      "sql": [
+        {
+          "kind": "DELETE",
+          "tables": [
+            "sub_deta"
+          ],
+          "line": 80
+        },
+        {
+          "kind": "DELETE",
+          "tables": [
+            "sub_ord"
+          ],
+          "line": 81
+        }
+      ],
+      "unsupported": []
+    },
+    {
+      "kind": "FUNCTION",
+      "name": "sub_list_open",
+      "file": "sub_maintain.4gl",
+      "start_line": 84,
+      "end_line": 105,
+      "parse_status": "ok",
+      "definitions": [
+        {
+          "name": "l_no",
+          "type": "CHAR(16)",
+          "line": 88
+        },
+        {
+          "name": "l_item",
+          "type": "CHAR(20)",
+          "line": 89
+        },
+        {
+          "name": "l_wc",
+          "type": "CHAR(12)",
+          "line": 90
+        },
+        {
+          "name": "l_eta",
+          "type": "VARCHAR(40)",
+          "line": 91
+        },
+        {
+          "name": "l_vend",
+          "type": "VARCHAR(60)",
+          "line": 92
+        }
+      ],
+      "sql": [
+        {
+          "kind": "DECLARE_CURSOR",
+          "tables": [
+            "sub_deta",
+            "sub_ord",
+            "vend_mast",
+            "wc_mast"
+          ],
+          "line": 94
+        }
+      ],
+      "unsupported": []
+    }
+  ],
+  "unsupported_syntax": [
+    {
+      "file": "sub_maintain.4gl",
+      "line": 45,
+      "snippet": "DEFER INTERRUPT",
+      "reason": "無法辨識的語句關鍵字"
+    }
+  ],
+  "database_conflicts": []
+}

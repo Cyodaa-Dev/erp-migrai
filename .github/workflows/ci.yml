@@ -102,6 +102,7 @@ jobs:
           names = zipfile.ZipFile(wheels[0]).namelist()
 
           required = [
+              "erp_migrai/mapping/odoo19_catalog.yaml",
               "erp_migrai/mapping/odoo17_catalog.yaml",
               "erp_migrai/mapping/rules/res_partner.yaml",
               "erp_migrai/mapping/rules/README.md",
@@ -247,9 +248,10 @@ jobs:
       # 天生就有 CREATEDB 權限——Odoo 用 `-d migrai -i ...` 初始化時會
       # 自己建資料庫，這裡不需要另外跑一次 `createdb`。
       #
-      # Odoo：官方 image 是 `odoo`（`library/odoo`），tag `17.0`
-      # （PRE-FLIGHT 1：Docker Hub API 實查，`17` 與 `17.0` 都存在，這裡
-      # 用更明確的 `17.0`）。連線參數透過環境變數傳
+      # Odoo：官方 image 是 `odoo`（`library/odoo`），tag `19`
+      # （20260806 起目標版本改為 Odoo 19，與內建 catalog
+      # `odoo19_catalog.yaml` 一致；該 tag 已在我們自己的部署上實際使用）。
+      # 連線參數透過環境變數傳
       # （`HOST`／`USER`／`PASSWORD`，PRE-FLIGHT 2：
       # `odoo/docker` 官方 entrypoint.sh 的 `wait-for-psql.py` 會自己等
       # Postgres ready，這裡不需要另外等 Postgres）。
@@ -278,8 +280,8 @@ jobs:
             -e HOST=migrai-pg \
             -e USER=odoo \
             -e PASSWORD=odoo \
-            odoo:17.0 \
-            -d migrai -i base,account,sale,product --without-demo=all
+            odoo:19 \
+            -d migrai -i base,account,sale,product,mrp,purchase --without-demo=all
 
       # 🔴 絕不用固定的 `sleep 30`——那會在慢的 runner 上隨機失敗，而失敗
       # 原因看起來會像我們的程式碼有問題（任務書明文禁止）。改用有上限的

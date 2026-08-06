@@ -1,0 +1,445 @@
+# Odoo 19.0 目標欄位 catalog —— **對真實實例 introspect 產生**
+#
+# 產生時間：2026-08-07T01:28:18+08:00
+# 產生方式：tools/introspect_catalog.py，對 odoo19 執行 fields_get
+# 基準策展範圍：/tmp/catwork/src/erp_migrai/mapping/odoo17_catalog.yaml
+#
+# 與人工整理的 odoo17_catalog.yaml 不同，這份檔案的 type/required 是機器讀來的，
+# 不是維護者抄的。但 `module` 欄位 fields_get 取不到，沿用基準檔記載；
+# 新增模型的 module 取自 --extra 的宣告。
+#
+# 🔴 重跑本工具前請確認目標實例已安裝所需模組——欄位存在與否取決於模組是否安裝，
+#    對一台沒裝 purchase 的 Odoo introspect，會誤判 purchase.order 不存在。
+
+models:
+  res.partner:
+    description: 聯絡人／夥伴（客戶、供應商、或兩者皆是）。T100 的客戶主檔、供應商主檔 在 Odoo 裡統一對應到這一個模型，用 customer_rank／supplier_rank
+      與 is_company 區分角色與型態。
+    fields:
+      name:
+        type: char
+        required: false
+        module: base
+        help: 夥伴名稱（公司名稱或個人姓名）。
+      ref:
+        type: char
+        required: false
+        module: base
+        help: 內部參照代碼，通常用來放來源系統（T100）的原始編號以利追溯。
+      vat:
+        type: char
+        required: false
+        module: base
+        help: 統一編號／稅籍編號。
+      phone:
+        type: char
+        required: false
+        module: base
+        help: 市話電話號碼。
+      email:
+        type: char
+        required: false
+        module: base
+        help: 電子郵件地址。
+      street:
+        type: char
+        required: false
+        module: base
+        help: 地址第一行（street）。
+      street2:
+        type: char
+        required: false
+        module: base
+        help: 地址第二行（street2），補充用，例如樓層、巷弄。
+      city:
+        type: char
+        required: false
+        module: base
+        help: 城市。
+      zip:
+        type: char
+        required: false
+        module: base
+        help: 郵遞區號。
+      active:
+        type: boolean
+        required: false
+        module: base
+        help: 是否為有效（未封存）的夥伴；封存的夥伴預設不會出現在大多數畫面上。
+      comment:
+        type: html
+        required: false
+        module: base
+        help: 自由格式的備註內文。
+      credit_limit:
+        type: float
+        required: false
+        module: account
+        help: 信用額度上限。只有安裝 account 模組後 res.partner 才會有這個欄位， 一個沒裝 account 的 Odoo 上不存在。
+      is_company:
+        type: boolean
+        required: false
+        module: base
+        help: true 表示這是公司（組織），false 表示這是個人聯絡人。
+      customer_rank:
+        type: integer
+        required: false
+        module: account
+        help: 客戶身分的強度分數，數值越高代表越常被當成銷售對象；大於 0 通常 代表這是一個客戶。這個欄位是 account 模組加到 res.partner 上的， 不是 base 就有的（見檔頭「已對照原始碼核實」一節）。
+      supplier_rank:
+        type: integer
+        required: false
+        module: account
+        help: 供應商身分的強度分數，數值越高代表越常被當成採購對象；大於 0 通常代表這是一個供應商。這個欄位是 account 模組加到 res.partner 上的，不是 base 就有的（見檔頭「已對照原始碼核實」一節）。
+  product.template:
+    description: 產品（樣板層級，不分變體）。T100 的品號主檔對應到這個模型；若品號沒有 規格變體（no variant），product.template 與 product.product
+      是一對一的。
+    fields:
+      name:
+        type: char
+        required: true
+        module: product
+        help: 產品名稱。
+      default_code:
+        type: char
+        required: false
+        module: product
+        help: 內部品號／料號，通常放來源系統（T100）的原始品號。
+      barcode:
+        type: char
+        required: false
+        module: product
+        help: 條碼（EAN/UPC 等）。
+      list_price:
+        type: float
+        required: false
+        module: product
+        help: 建議售價（銷售基準價）。
+      standard_price:
+        type: float
+        required: false
+        module: product
+        help: 成本價（用於毛利計算等內部用途）。
+      uom_id:
+        type: many2one
+        required: true
+        module: product
+        help: 銷售／庫存計量單位，指向 uom.uom。
+      type:
+        type: selection
+        required: true
+        module: product
+        help: 產品型態（例如服務、消耗品等）；決定是否追蹤庫存與相關的可選欄位 會不會出現。
+      active:
+        type: boolean
+        required: false
+        module: product
+        help: 是否為有效（未封存）的產品。
+      description:
+        type: html
+        required: false
+        module: product
+        help: 內部說明備註（非對客戶顯示的銷售說明）。
+      weight:
+        type: float
+        required: false
+        module: product
+        help: 單位重量，用於物流／運費估算。
+      volume:
+        type: float
+        required: false
+        module: product
+        help: 單位體積，用於物流／運費估算。
+  product.product:
+    description: 產品變體（variant）。sale.order.line.product_id 指向的是這個模型，不是 product.template。直接建立 product.product
+      時 Odoo 會自動補上對應的 product.template，因此來源系統的品號主檔對到這裡，可以避免載入階段必須 內建「建完 template 要讀回 product_variant_id」這種
+      Odoo 特定模型的內部知識。
+    fields:
+      name:
+        type: char
+        required: true
+        module: product
+        help: '產品名稱。委派自 product.template（`_inherits = {''product.template'': ''product_tmpl_id''}`，product_product.py
+          第 18 行）：這個欄位不是 product.product 自己宣告的，是透過委派寫進 product.template（見 product_template.py 第 40 行，required=True）。委派欄位寫得進去，
+          但實際存放位置是 product.template，不是 product.product 自身。'
+      default_code:
+        type: char
+        required: false
+        module: product
+        help: 內部品號／料號，通常放來源系統（T100）的原始品號。product_product.py 第 34 行。
+      barcode:
+        type: char
+        required: false
+        module: product
+        help: 條碼（EAN/UPC 等）。product_product.py 第 44 行。
+      list_price:
+        type: float
+        required: false
+        module: product
+        help: 建議售價（銷售基準價）。與 name 一樣是委派自 product.template 的欄位 （product_template.py 第 71 行，非 required），不是
+          product.product 自己宣告的欄位。**不要跟 product.product 自己的 lst_price （product_product.py 第 29 行，compute
+          + inverse）搞混**——lst_price 是另一個唯讀計算欄位，不是這個欄位，寫入時不能用它取代 list_price。
+      standard_price:
+        type: float
+        required: false
+        module: product
+        help: 成本價。product_product.py 第 53 行：`company_dependent=True`（值實際 存在 ir.property，不是一般欄位）且 `groups="base.group_user"`
+          （需要對應的存取群組才讀寫得到）。透過匯入寫入時的實際行為 （是否需要額外處理 company_dependent 儲存方式）待 CI 實測確認。
+      active:
+        type: boolean
+        required: false
+        module: product
+        help: 是否為有效（未封存）的產品。product_product.py 第 38 行。
+  sale.order:
+    description: 銷售訂單單頭。T100 的銷貨訂單主檔對應到這個模型，明細行在 sale.order.line。
+    fields:
+      name:
+        type: char
+        required: true
+        module: sale
+        help: 訂單編號（Odoo 內部單號，通常自動編號）。
+      partner_id:
+        type: many2one
+        required: true
+        module: sale
+        help: 下單客戶，指向 res.partner。
+      date_order:
+        type: datetime
+        required: true
+        module: sale
+        help: 訂單建立／確認的日期時間。
+      state:
+        type: selection
+        required: false
+        module: sale
+        help: 訂單狀態（例如草稿、已確認、已取消）。
+      amount_total:
+        type: monetary
+        required: false
+        module: sale
+        help: 訂單含稅總金額。
+      client_order_ref:
+        type: char
+        required: false
+        module: sale
+        help: 客戶自己的訂單編號（客戶端參照），用於單據對帳。
+      note:
+        type: html
+        required: false
+        module: sale
+        help: 訂單備註。
+  sale.order.line:
+    description: 銷售訂單明細行，隸屬於某一張 sale.order。
+    fields:
+      order_id:
+        type: many2one
+        required: true
+        module: sale
+        help: 所屬的銷售訂單，指向 sale.order。
+      product_id:
+        type: many2one
+        required: false
+        module: sale
+        help: 此明細行的產品，指向 product.product。Odoo 17.0 的欄位定義未標 required（sale_order_line.py 第 80～84 行）；是否真的可以省略，
+          待 CI 實測確認。
+      name:
+        type: text
+        required: true
+        module: sale
+        help: 此明細行顯示的說明文字（通常預設帶入產品名稱，可人工覆寫）。
+      product_uom_qty:
+        type: float
+        required: true
+        module: sale
+        help: 訂購數量（以 product_uom_id 為單位）。sale_order_line.py 第 115～119 行：`compute + precompute + default=1.0`
+          的 required 欄位。
+      price_unit:
+        type: float
+        required: true
+        module: sale
+        help: 單價。
+      discount:
+        type: float
+        required: false
+        module: sale
+        help: 折扣百分比。
+      price_subtotal:
+        type: monetary
+        required: false
+        module: sale
+        help: 此明細行未稅小計金額。
+  mrp.workcenter:
+    description: 工作中心（產線上的一個工作站）。T100 的工作中心主檔對應到這裡。 「這個工序是否委外」在 Odoo 沒有對應欄位，實務上靠代碼前綴或另設分類表達。
+    fields:
+      name:
+        type: char
+        required: false
+        module: mrp
+        help: Work Center
+      code:
+        type: char
+        required: false
+        module: mrp
+        help: Code
+      active:
+        type: boolean
+        required: false
+        module: mrp
+        help: If the active field is set to False, it will allow you to hide the resource record without
+          removing it.
+      costs_hour:
+        type: float
+        required: false
+        module: mrp
+        help: Hourly processing cost.
+      time_efficiency:
+        type: float
+        required: false
+        module: mrp
+        help: This field is used to calculate the expected duration of a work order at this work center.
+          For example, if a work order takes one hour and the efficiency factor is 100%, then the expected
+          duration will be one hour. If the efficiency factor is 200%, however the expected duration will
+          be 30 minutes.
+      company_id:
+        type: many2one
+        required: false
+        module: mrp
+        help: Company
+      resource_calendar_id:
+        type: many2one
+        required: false
+        module: mrp
+        help: Define the working schedule of the resource. If not set, the resource will have fully flexible
+          working hours.
+  mrp.production:
+    description: 製令（生產工單）。T100 的製令主檔對應到這裡；製令下的工序是 mrp.workorder，不在本 catalog 的策展範圍內。
+    fields:
+      name:
+        type: char
+        required: false
+        module: mrp
+        help: Reference
+      product_id:
+        type: many2one
+        required: true
+        module: mrp
+        help: Product
+      product_qty:
+        type: float
+        required: true
+        module: mrp
+        help: Quantity To Produce
+      date_start:
+        type: datetime
+        required: true
+        module: mrp
+        help: Date you plan to start production or date you actually started production.
+      state:
+        type: selection
+        required: false
+        module: mrp
+        help: " * Draft: The MO is not confirmed yet.\n * Confirmed: The MO is confirmed, the stock rules\
+          \ and the reordering of the components are trigerred.\n * In Progress: The production has started\
+          \ (on the MO or on the WO).\n * To Close: The production is done, the MO has to be closed.\n\
+          \ * Done: The MO is closed, the stock moves are posted. \n * Cancelled: The MO has been cancelled,\
+          \ can't be confirmed anymore."
+      origin:
+        type: char
+        required: false
+        module: mrp
+        help: Reference of the document that generated this production order request.
+      company_id:
+        type: many2one
+        required: true
+        module: mrp
+        help: Company
+      bom_id:
+        type: many2one
+        required: false
+        module: mrp
+        help: Bills of Materials, also called recipes, are used to autocomplete components and work order
+          instructions.
+  purchase.order:
+    description: 採購單。委外加工在 Odoo 通常以採購單承載——對協力廠下的是一張「買加工服務」 的單，而不是製造單據。T100 的委外發包單頭對應到這裡。
+    fields:
+      name:
+        type: char
+        required: true
+        module: purchase
+        help: Order Reference
+      partner_id:
+        type: many2one
+        required: true
+        module: purchase
+        help: You can find a vendor by its Name, TIN, Email or Internal Reference.
+      date_order:
+        type: datetime
+        required: true
+        module: purchase
+        help: Depicts the date within which the Quotation should be confirmed and converted into a purchase
+          order.
+      date_planned:
+        type: datetime
+        required: false
+        module: purchase
+        help: Delivery date promised by vendor. This date is used to determine expected arrival of products.
+      origin:
+        type: char
+        required: false
+        module: purchase
+        help: Reference of the document that generated this purchase order request (e.g. a sales order)
+      state:
+        type: selection
+        required: false
+        module: purchase
+        help: Status
+      company_id:
+        type: many2one
+        required: true
+        module: purchase
+        help: Company
+      note:
+        type: html
+        required: false
+        module: purchase
+        help: Terms and Conditions
+  purchase.order.line:
+    description: 採購單明細。委外發包的品項、數量、加工單價與預計回廠日都落在這一層。 date_planned 是 datetime，來源系統若用自由文字記回廠日，需要在 map 之後
+      由人決定解析規則。
+    fields:
+      order_id:
+        type: many2one
+        required: true
+        module: purchase
+        help: Order Reference
+      product_id:
+        type: many2one
+        required: false
+        module: purchase
+        help: Product
+      name:
+        type: text
+        required: true
+        module: purchase
+        help: Description
+      product_qty:
+        type: float
+        required: true
+        module: purchase
+        help: Quantity
+      price_unit:
+        type: float
+        required: true
+        module: purchase
+        help: Unit Price
+      date_planned:
+        type: datetime
+        required: false
+        module: purchase
+        help: Delivery date expected from vendor. This date respectively defaults to vendor pricelist
+          lead time then today's date.
+      product_uom_id:
+        type: many2one
+        required: false
+        module: purchase
+        help: Unit

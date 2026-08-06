@@ -1,0 +1,863 @@
+{
+  "schema_version": "1.1",
+  "inventory_synthetic": true,
+  "stats": {
+    "source_columns": 38,
+    "mapped_columns": 29,
+    "coverage_percent": 76,
+    "auto": 29,
+    "suggested": 0,
+    "needs_human": 0
+  },
+  "models": [
+    {
+      "source_table": "item_mast",
+      "target_model": "product.template",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：subcontract.yaml#item_mast"
+      ]
+    },
+    {
+      "source_table": "sub_deta",
+      "target_model": "purchase.order.line",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：subcontract.yaml#sub_deta"
+      ]
+    },
+    {
+      "source_table": "sub_ord",
+      "target_model": "purchase.order",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：subcontract.yaml#sub_ord"
+      ]
+    },
+    {
+      "source_table": "vend_mast",
+      "target_model": "res.partner",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：subcontract.yaml#vend_mast"
+      ]
+    },
+    {
+      "source_table": "wc_mast",
+      "target_model": "mrp.workcenter",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：subcontract.yaml#wc_mast"
+      ]
+    },
+    {
+      "source_table": "wo_mast",
+      "target_model": "mrp.production",
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中資料表規則：subcontract.yaml#wo_mast"
+      ]
+    }
+  ],
+  "mappings": [
+    {
+      "source": {
+        "table": "item_mast",
+        "column": "item_cost",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "product.template",
+        "field": "standard_price",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#item_mast.item_cost"
+      ]
+    },
+    {
+      "source": {
+        "table": "item_mast",
+        "column": "item_name",
+        "type": "VARCHAR(80)"
+      },
+      "target": {
+        "model": "product.template",
+        "field": "name",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#item_mast.item_name"
+      ]
+    },
+    {
+      "source": {
+        "table": "item_mast",
+        "column": "item_no",
+        "type": "CHAR(20)"
+      },
+      "target": {
+        "model": "product.template",
+        "field": "default_code",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#item_mast.item_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "item_mast",
+        "column": "item_price",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "product.template",
+        "field": "list_price",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#item_mast.item_price"
+      ]
+    },
+    {
+      "source": {
+        "table": "item_mast",
+        "column": "item_spec",
+        "type": "VARCHAR(120)"
+      },
+      "target": {
+        "model": "product.template",
+        "field": "description",
+        "type": "html"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#item_mast.item_spec"
+      ]
+    },
+    {
+      "source": {
+        "table": "item_mast",
+        "column": "item_stus",
+        "type": "CHAR(1)"
+      },
+      "target": {
+        "model": "product.template",
+        "field": "active",
+        "type": "boolean"
+      },
+      "transform": {
+        "kind": "value_map",
+        "value_map": {
+          "Y": true,
+          "N": false
+        },
+        "default": true,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#item_mast.item_stus"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_deta",
+        "column": "sub_item_no",
+        "type": "CHAR(20)"
+      },
+      "target": {
+        "model": "purchase.order.line",
+        "field": "product_id",
+        "type": "many2one"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_deta.sub_item_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_deta",
+        "column": "sub_no",
+        "type": "CHAR(16)"
+      },
+      "target": {
+        "model": "purchase.order.line",
+        "field": "order_id",
+        "type": "many2one"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_deta.sub_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_deta",
+        "column": "sub_price",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "purchase.order.line",
+        "field": "price_unit",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_deta.sub_price"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_deta",
+        "column": "sub_qty",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "purchase.order.line",
+        "field": "product_qty",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_deta.sub_qty"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_ord",
+        "column": "sub_date",
+        "type": "DATE"
+      },
+      "target": {
+        "model": "purchase.order",
+        "field": "date_order",
+        "type": "datetime"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_ord.sub_date"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_ord",
+        "column": "sub_memo",
+        "type": "VARCHAR(200)"
+      },
+      "target": {
+        "model": "purchase.order",
+        "field": "note",
+        "type": "html"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_ord.sub_memo"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_ord",
+        "column": "sub_no",
+        "type": "CHAR(16)"
+      },
+      "target": {
+        "model": "purchase.order",
+        "field": "name",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_ord.sub_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_ord",
+        "column": "sub_vend_no",
+        "type": "CHAR(10)"
+      },
+      "target": {
+        "model": "purchase.order",
+        "field": "partner_id",
+        "type": "many2one"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_ord.sub_vend_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "sub_ord",
+        "column": "sub_wo_no",
+        "type": "CHAR(16)"
+      },
+      "target": {
+        "model": "purchase.order",
+        "field": "origin",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#sub_ord.sub_wo_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "vend_mast",
+        "column": "vend_addr",
+        "type": "VARCHAR(120)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "street",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#vend_mast.vend_addr"
+      ]
+    },
+    {
+      "source": {
+        "table": "vend_mast",
+        "column": "vend_name",
+        "type": "VARCHAR(60)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "name",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#vend_mast.vend_name"
+      ]
+    },
+    {
+      "source": {
+        "table": "vend_mast",
+        "column": "vend_no",
+        "type": "CHAR(10)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "ref",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#vend_mast.vend_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "vend_mast",
+        "column": "vend_stus",
+        "type": "CHAR(1)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "active",
+        "type": "boolean"
+      },
+      "transform": {
+        "kind": "value_map",
+        "value_map": {
+          "Y": true,
+          "N": false
+        },
+        "default": true,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#vend_mast.vend_stus"
+      ]
+    },
+    {
+      "source": {
+        "table": "vend_mast",
+        "column": "vend_tel",
+        "type": "VARCHAR(20)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "phone",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#vend_mast.vend_tel"
+      ]
+    },
+    {
+      "source": {
+        "table": "vend_mast",
+        "column": "vend_ubn",
+        "type": "CHAR(8)"
+      },
+      "target": {
+        "model": "res.partner",
+        "field": "vat",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#vend_mast.vend_ubn"
+      ]
+    },
+    {
+      "source": {
+        "table": "wc_mast",
+        "column": "wc_name",
+        "type": "VARCHAR(60)"
+      },
+      "target": {
+        "model": "mrp.workcenter",
+        "field": "name",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#wc_mast.wc_name"
+      ]
+    },
+    {
+      "source": {
+        "table": "wc_mast",
+        "column": "wc_no",
+        "type": "CHAR(12)"
+      },
+      "target": {
+        "model": "mrp.workcenter",
+        "field": "code",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#wc_mast.wc_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "wc_mast",
+        "column": "wc_rate",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "mrp.workcenter",
+        "field": "costs_hour",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#wc_mast.wc_rate"
+      ]
+    },
+    {
+      "source": {
+        "table": "wo_mast",
+        "column": "wo_date",
+        "type": "DATE"
+      },
+      "target": {
+        "model": "mrp.production",
+        "field": "date_start",
+        "type": "datetime"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#wo_mast.wo_date"
+      ]
+    },
+    {
+      "source": {
+        "table": "wo_mast",
+        "column": "wo_item_no",
+        "type": "CHAR(20)"
+      },
+      "target": {
+        "model": "mrp.production",
+        "field": "product_id",
+        "type": "many2one"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#wo_mast.wo_item_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "wo_mast",
+        "column": "wo_no",
+        "type": "CHAR(16)"
+      },
+      "target": {
+        "model": "mrp.production",
+        "field": "name",
+        "type": "char"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#wo_mast.wo_no"
+      ]
+    },
+    {
+      "source": {
+        "table": "wo_mast",
+        "column": "wo_qty",
+        "type": "DECIMAL(15,4)"
+      },
+      "target": {
+        "model": "mrp.production",
+        "field": "product_qty",
+        "type": "float"
+      },
+      "transform": {
+        "kind": "identity",
+        "value_map": null,
+        "default": null,
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#wo_mast.wo_qty"
+      ]
+    },
+    {
+      "source": {
+        "table": "wo_mast",
+        "column": "wo_stus",
+        "type": "CHAR(2)"
+      },
+      "target": {
+        "model": "mrp.production",
+        "field": "state",
+        "type": "selection"
+      },
+      "transform": {
+        "kind": "value_map",
+        "value_map": {
+          "10": "draft",
+          "20": "confirmed",
+          "30": "progress",
+          "90": "done"
+        },
+        "default": "draft",
+        "value": null,
+        "ref_table": null,
+        "ref_column": null
+      },
+      "confidence": 100,
+      "tier": "auto",
+      "reasons": [
+        "命中欄位規則：subcontract.yaml#wo_mast.wo_stus"
+      ]
+    }
+  ],
+  "unmapped": [
+    {
+      "table": "item_mast",
+      "column": "item_hits",
+      "type": "INTEGER",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "item_mast",
+      "column": "item_kind",
+      "type": "CHAR(2)",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "item_mast",
+      "column": "item_life",
+      "type": "INTEGER",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "sub_deta",
+      "column": "sub_eta",
+      "type": "VARCHAR(40)",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "sub_deta",
+      "column": "sub_seq",
+      "type": "SMALLINT",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "sub_deta",
+      "column": "sub_trial",
+      "type": "SMALLINT",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "sub_deta",
+      "column": "sub_wc_no",
+      "type": "CHAR(12)",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "vend_mast",
+      "column": "vend_proc",
+      "type": "VARCHAR(40)",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "wc_mast",
+      "column": "wc_outs",
+      "type": "CHAR(1)",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    }
+  ],
+  "conflicts": []
+}

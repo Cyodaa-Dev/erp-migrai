@@ -25,10 +25,15 @@ EXPECTED_MODELS = {
     "product.product",
     "sale.order",
     "sale.order.line",
+    # 20260806 隨 case04_subcontract（委外加工）加入，見 corpus/case04_subcontract/README.md
+    "mrp.workcenter",
+    "mrp.production",
+    "purchase.order",
+    "purchase.order.line",
 }
 
 
-def test_builtin_catalog_loads_and_has_five_models():
+def test_builtin_catalog_loads_and_has_expected_models():
     catalog = load_catalog()
     assert set(catalog) == EXPECTED_MODELS
     for name, model in catalog.items():
@@ -36,12 +41,15 @@ def test_builtin_catalog_loads_and_has_five_models():
         assert model.name == name
 
 
-def test_res_partner_name_is_required_char():
+def test_res_partner_name_is_char_and_not_field_level_required():
+    # 20260806 對 Odoo 19 真機 `fields_get` 查證：`res.partner.name.required`
+    # 是 **False**——Odoo 用 SQL constraint 而不是欄位層 required 來管它。
+    # 舊版斷言寫 True，是照著人工抄寫的 odoo17_catalog.yaml 寫的，那筆記載是錯的。
     catalog = load_catalog()
     name_field = catalog["res.partner"].fields["name"]
     assert isinstance(name_field, OdooField)
-    assert name_field.required is True
     assert name_field.type == "char"
+    assert name_field.required is False
 
 
 def test_res_partner_credit_limit_module_is_account_not_base():
@@ -99,11 +107,19 @@ def test_sale_order_line_required_flags_match_odoo_source():
     assert fields["product_id"].required is False
 
 
-def test_every_model_has_at_least_one_required_field():
+def test_model_may_legitimately_have_no_required_field_in_the_curated_subset():
+    # catalog 收的是**策展子集**，不是模型的全部欄位。`res.partner` 與
+    # `mrp.workcenter` 在 Odoo 19 都有 required 欄位（前者 autopost_bills／
+    # group_rfq／group_on，後者 resource_id／sequence／currency_id），但沒有
+    # 一個落在我們會映射的子集裡。所以「子集裡沒有必填欄位」是合法狀態，
+    # 不是整理疏漏——舊的斷言與 catalog.py 裡對應的檢查已於 20260806 移除。
     catalog = load_catalog()
-    for name, model in catalog.items():
-        required_fields = [f for f in model.fields.values() if f.required]
-        assert required_fields, f"{name} 沒有任何必填欄位——幾乎必然是整理疏漏"
+    without_required = [
+        name
+        for name, model in catalog.items()
+        if not any(f.required for f in model.fields.values())
+    ]
+    assert "res.partner" in without_required
 
 
 def test_every_field_has_module_and_nonempty_help():
@@ -266,8 +282,11 @@ def test_models_key_not_a_mapping_raises_catalog_error(tmp_path: Path):
     assert str(bad) in str(exc_info.value)
 
 
-def test_model_with_no_required_field_raises_catalog_error(tmp_path: Path):
-    bad = _write(
+def test_model_with_no_required_field_is_accepted(tmp_path: Path):
+    # 20260806 起不再視為錯誤：catalog 是策展子集，子集裡沒有必填欄位很正常
+    # （見 catalog._parse_model 的說明）。這個測試從「必須拋錯」翻轉成
+    # 「必須順利載入」，翻轉本身就是這項行為變更的紀錄。
+    ok = _write(
         tmp_path,
         """
 models:
@@ -281,9 +300,9 @@ models:
         help: "參照"
 """,
     )
-    with pytest.raises(CatalogError) as exc_info:
-        load_catalog(bad)
-    assert "res.partner" in str(exc_info.value)
+    catalog = load_catalog(ok)
+    assert set(catalog) == {"res.partner"}
+    assert catalog["res.partner"].fields["ref"].required is False
 
 
 def test_missing_module_raises_catalog_error(tmp_path: Path):
@@ -405,10 +424,15 @@ models:
 
 
 def test_allowed_field_types_is_exactly_the_closed_set():
+    # 這個集合是刻意釘死的：新增一個型別必須同時在 typing_rules._COMPATIBILITY
+    # 的每一個來源家族補上對應的一格，改這裡等於宣告那件事已經做完。
+    # 20260806 新增 `html`——Odoo 19 把 res.partner.comment /
+    # product.template.description / sale.order.note 從 text 改成 html。
     expected = frozenset(
         {
             "char",
             "text",
+            "html",
             "integer",
             "float",
             "monetary",

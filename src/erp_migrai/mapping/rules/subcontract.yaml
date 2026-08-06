@@ -1,0 +1,173 @@
+# 映射規則：T100 委外加工發包 → Odoo（case04_subcontract）
+#
+# 【貢獻點③】跟 res_partner.yaml / sale_order.yaml 一樣，這是人類知識，
+# 不需要改任何 Python。載入器會讀 rules/ 底下所有 *.yaml／*.yml。
+#
+# 主題：委外加工。金屬沖焊代工廠把表面處理、電鍍、鍛造、CNC、輪牙、橡膠件
+# 發包給協力廠，在製品離廠之後的狀態就是靠這幾張表承載的。
+#
+# 🔴 本檔刻意保留三個「對不上」的欄位（見各欄註解）。它們會落進 unmapped，
+#    這是規格而非缺陷——工具的價值之一就是誠實指出「來源有、目標沒地方放」，
+#    而不是硬找一個相近欄位塞進去。
+version: 1
+
+tables:
+  vend_mast:
+    target_model: res.partner
+  item_mast:
+    target_model: product.template
+  wc_mast:
+    target_model: mrp.workcenter
+  wo_mast:
+    target_model: mrp.production
+  sub_ord:
+    target_model: purchase.order
+  sub_deta:
+    target_model: purchase.order.line
+
+columns:
+  # ── 委外廠商 ───────────────────────────────────────────────
+  vend_mast.vend_no:
+    target: res.partner.ref
+  vend_mast.vend_name:
+    target: res.partner.name
+  vend_mast.vend_ubn:
+    target: res.partner.vat
+  vend_mast.vend_tel:
+    target: res.partner.phone
+  vend_mast.vend_addr:
+    target: res.partner.street
+  # T100 用 CHAR(1) 的 Y/N 表示是否往來，Odoo 的 active 是 boolean。
+  vend_mast.vend_stus:
+    target: res.partner.active
+    transform:
+      kind: value_map
+      map:
+        "Y": true
+        "N": false
+      default: true
+  # 🔴 unmapped：協力廠承接的製程別（表面處理／電鍍／鍛造…）。
+  #    Odoo 的 res.partner 沒有「供應商能做什麼製程」這個欄位；真要落地得靠
+  #    產品供應商（product.supplierinfo）或自訂欄位，不是 partner 上的一格。
+  #    這一欄不宣告 target，讓它落進 unmapped。
+  # vend_mast.vend_proc: （刻意不映射）
+
+  # ── 品號（含模具件）─────────────────────────────────────────
+  item_mast.item_no:
+    target: product.template.default_code
+  item_mast.item_name:
+    target: product.template.name
+  item_mast.item_spec:
+    target: product.template.description
+  item_mast.item_price:
+    target: product.template.list_price
+  item_mast.item_cost:
+    target: product.template.standard_price
+  item_mast.item_stus:
+    target: product.template.active
+    transform:
+      kind: value_map
+      map:
+        "Y": true
+        "N": false
+      default: true
+  # 🔴 unmapped ×2：模具的累計衝次與設計壽命。
+  #    這兩欄是「模具壽命達成率」KPI 的分子與分母，來源系統有、Odoo 標準模型
+  #    沒有。硬塞進 weight/volume 之類的數值欄位是錯的——那會讓下游看到一個
+  #    語意完全不同的數字。正解是開自訂欄位，而那是導入決策，不是映射能決定的。
+  # item_mast.item_hits: （刻意不映射）
+  # item_mast.item_life: （刻意不映射）
+  # item_mast.item_kind: （刻意不映射：FG/SF/RM/DI 的分類語意需對到 Odoo 的
+  #                        product category，是一張對照表而不是欄位對欄位）
+
+  # ── 工作中心 ───────────────────────────────────────────────
+  wc_mast.wc_no:
+    target: mrp.workcenter.code
+  wc_mast.wc_name:
+    target: mrp.workcenter.name
+  wc_mast.wc_rate:
+    target: mrp.workcenter.costs_hour
+  # 🔴 unmapped：wc_outs（是否委外）。Odoo 19 的 mrp.workcenter 沒有這個布林。
+  #    「在製品是否離廠」在本 demo 是靠 code 前綴 OS-/MW- 表達的——這是慣例，
+  #    不是欄位；搬遷時必須明講，否則下游看 code 猜語意就會出錯。
+  # wc_mast.wc_outs: （刻意不映射）
+
+  # ── 製令 ───────────────────────────────────────────────────
+  wo_mast.wo_no:
+    target: mrp.production.name
+  wo_mast.wo_qty:
+    target: mrp.production.product_qty
+  wo_mast.wo_date:
+    target: mrp.production.date_start
+  wo_mast.wo_item_no:
+    target: mrp.production.product_id
+    reference:
+      ref_table: item_mast
+      ref_column: item_no
+  # T100 用兩碼數字代表製令狀態，Odoo 的 state 是 selection。這是知道答案的
+  # 對應，所以宣告值轉換；跟 sub_eta「不知道怎麼解析」的情況剛好相反。
+  wo_mast.wo_stus:
+    target: mrp.production.state
+    transform:
+      kind: value_map
+      map:
+        "10": draft
+        "20": confirmed
+        "30": progress
+        "90": done
+      default: draft
+
+  # ── 委外發包單頭 ───────────────────────────────────────────
+  sub_ord.sub_no:
+    target: purchase.order.name
+  sub_ord.sub_date:
+    target: purchase.order.date_order
+  sub_ord.sub_memo:
+    target: purchase.order.note
+  sub_ord.sub_vend_no:
+    target: purchase.order.partner_id
+    reference:
+      ref_table: vend_mast
+      ref_column: vend_no
+  # 製令編號在 Odoo 用 origin 這個自由文字欄位承載來源單據，不是外鍵。
+  sub_ord.sub_wo_no:
+    target: purchase.order.origin
+
+  # ── 委外發包單身 ───────────────────────────────────────────
+  sub_deta.sub_no:
+    target: purchase.order.line.order_id
+    reference:
+      ref_table: sub_ord
+      ref_column: sub_no
+  sub_deta.sub_item_no:
+    target: purchase.order.line.product_id
+    reference:
+      ref_table: item_mast
+      ref_column: item_no
+  sub_deta.sub_qty:
+    target: purchase.order.line.product_qty
+  sub_deta.sub_price:
+    target: purchase.order.line.price_unit
+  # 🔴 sub_eta（預計回廠日）刻意**不宣告規則**，這是本語料最重要的一個決定。
+  #
+  #    來源型別是 VARCHAR(40)，現場實務填的是「2026/08/15」「約8月中」「月底前」
+  #    「等對方回覆」甚至空白；Odoo 的 purchase.order.line.date_planned 是 datetime。
+  #
+  #    早期版本曾在這裡宣告 `target: purchase.order.line.date_planned`，結果是
+  #    **confidence 100 + transform identity**——因為規則命中會直接給滿分、
+  #    跳過型別相容檢查（引擎的設計：人宣告的就信人的）。那等於工具拍胸脯說
+  #    「這一欄我有十成把握直接搬」，然後在 load 階段被「約8月中」炸掉。
+  #
+  #    拿掉規則之後它走啟發式路徑，type_score(VARCHAR → datetime) = 0.0
+  #    「字元轉日期時間需要解析，格式不保證成立，判定不相容」，誠實落進
+  #    unmapped。這才是對的：要不要解析、解不出來要擋單還是留空，是導入決策，
+  #    工具不替客戶選，但必須明說「這一欄現在落不下去」。
+  #
+  #    「委外進度不可見」在資料層的根因就是這一欄——一個沒有型別的日期。
+  # 🔴 unmapped：sub_trial（試模輪次）。Odoo 標準模型沒有這個概念。
+  #    它是「調機因人而異」這個痛點唯一的量化痕跡，落進 unmapped 正好用來
+  #    說明：這家公司最貴的知識，在現行系統裡沒有欄位可以放。
+  # sub_deta.sub_trial: （刻意不映射）
+  # sub_deta.sub_seq: （刻意不映射：Odoo 的 order line 用 sequence 排序，
+  #                     語意與 T100 的項次不完全等價）
+  # sub_deta.sub_wc_no: （刻意不映射：purchase.order.line 上沒有工作中心）

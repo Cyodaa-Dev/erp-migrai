@@ -1,0 +1,29 @@
+# case04_subcontract（委外加工）需要、但基準 catalog 沒有的目標模型。
+#
+# `module` 要正確填：欄位是否真的存在取決於該模組有沒有被安裝，load 階段
+# 靠這個判斷。`description` 是給 mapping.csv 的審核者看的。
+mrp.workcenter:
+  module: mrp
+  description: >-
+    工作中心（產線上的一個工作站）。T100 的工作中心主檔對應到這裡。
+    「這個工序是否委外」在 Odoo 沒有對應欄位，實務上靠代碼前綴或另設分類表達。
+  fields: [name, code, active, costs_hour, time_efficiency, company_id, resource_calendar_id]
+mrp.production:
+  module: mrp
+  description: >-
+    製令（生產工單）。T100 的製令主檔對應到這裡；製令下的工序是
+    mrp.workorder，不在本 catalog 的策展範圍內。
+  fields: [name, product_id, product_qty, date_start, state, origin, company_id, bom_id]
+purchase.order:
+  module: purchase
+  description: >-
+    採購單。委外加工在 Odoo 通常以採購單承載——對協力廠下的是一張「買加工服務」
+    的單，而不是製造單據。T100 的委外發包單頭對應到這裡。
+  fields: [name, partner_id, date_order, date_planned, origin, state, company_id, note]
+purchase.order.line:
+  module: purchase
+  description: >-
+    採購單明細。委外發包的品項、數量、加工單價與預計回廠日都落在這一層。
+    date_planned 是 datetime，來源系統若用自由文字記回廠日，需要在 map 之後
+    由人決定解析規則。
+  fields: [order_id, product_id, name, product_qty, price_unit, date_planned, product_uom_id]

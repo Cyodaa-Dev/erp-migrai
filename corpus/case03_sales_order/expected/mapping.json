@@ -435,7 +435,7 @@
       "target": {
         "model": "sale.order",
         "field": "note",
-        "type": "text"
+        "type": "html"
       },
       "transform": {
         "kind": "identity",
