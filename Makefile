@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install lint format test test-all update-golden demo demo-full corpus
+.PHONY: help install lint format test test-all update-golden demo demo-full corpus corpus-dirty
 
 OUT ?= out/demo
 
@@ -50,6 +50,14 @@ update-golden:  ## 重新產生 corpus 的 golden 檔（diff 必須人工審過�
 
 corpus:  ## 由 schema.sql 與 seed.sql 產生各 case 的 data.sqlite（不進 git）
 	uv run python -m erp_migrai.tools.build_corpus
+
+# 髒資料版：示範「誠實報錯」用。刻意與 corpus 分成兩個目標而不是讓
+# corpus 順手把兩份都建出來——`make demo-full` 依賴 corpus，若那個目標
+# 也產出 data_dirty.sqlite，示範前的準備動作就會多出一份「長得很像正式
+# 來源、內容卻是故意弄壞的」檔案躺在同一個目錄，按錯 --source 的代價
+# 是把髒資料寫進示範用的 Odoo。要用它就得自己明講一次。
+corpus-dirty:  ## 由 schema.sql 與 seed_dirty.sql 產生 data_dirty.sqlite（不進 git；示範報錯用）
+	uv run python -m erp_migrai.tools.build_corpus --dirty
 
 # 依賴 corpus：demo-full 讀的是 case03_sales_order/data/data.sqlite，這份
 # 二進位檔不進 git（見 corpus 目標），沒有先跑過 corpus 就不存在。

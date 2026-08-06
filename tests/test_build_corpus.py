@@ -251,3 +251,91 @@ def test_main_returns_nonzero_when_corpus_dir_has_no_cases(tmp_path, monkeypatch
     monkeypatch.setattr(build_corpus_module, "CORPUS_ROOT", corpus_root)
 
     assert main() == 1
+
+
+# ---------------------------------------------------------------------------
+# `--dirty`：髒語料版（示範「誠實報錯」用的 data_dirty.sqlite）
+# ---------------------------------------------------------------------------
+
+
+def _write_case(case_dir, *, seed_sql: str, dirty_seed_sql: str | None = None) -> None:
+    """建一個最小 case：一張表 `t`，一份 `seed.sql`，可選的 `seed_dirty.sql`。"""
+    (case_dir / "src").mkdir(parents=True)
+    (case_dir / "data").mkdir()
+    (case_dir / "src" / "schema.sql").write_text(
+        "CREATE TABLE t (a CHAR(4) NOT NULL, PRIMARY KEY (a));\n", encoding="utf-8"
+    )
+    (case_dir / "data" / "seed.sql").write_text(seed_sql, encoding="utf-8")
+    if dirty_seed_sql is not None:
+        (case_dir / "data" / "seed_dirty.sql").write_text(dirty_seed_sql, encoding="utf-8")
+
+
+def test_main_dirty_builds_dirty_db_from_dirty_seed(tmp_path, monkeypatch):
+    """`--dirty` 必須讀 `seed_dirty.sql`、寫 `data_dirty.sqlite`。
+
+    列數斷言用「兩份 seed 灌的列數不同」來釘死「真的讀了髒的那一份」——
+    若 `--dirty` 只換了輸出檔名、內容仍來自 `seed.sql`，產物一樣會存在、
+    一樣打得開，只有列數會露餡。
+    """
+    corpus_root = tmp_path / "corpus"
+    case = corpus_root / "case_probe"
+    _write_case(
+        case,
+        seed_sql="INSERT INTO t VALUES ('x');\n",
+        dirty_seed_sql="INSERT INTO t VALUES ('x');\nINSERT INTO t VALUES ('y');\n",
+    )
+
+    import erp_migrai.tools.build_corpus as build_corpus_module
+
+    monkeypatch.setattr(build_corpus_module, "CORPUS_ROOT", corpus_root)
+
+    assert main(["--dirty"]) == 0
+
+    dirty_db = case / "data" / "data_dirty.sqlite"
+    assert dirty_db.is_file()
+    with closing(sqlite3.connect(dirty_db)) as con:
+        assert con.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 2
+
+    # 乾淨版不該被 `--dirty` 順手產生或覆寫——兩份產物互不干擾。
+    assert not (case / "data" / "data.sqlite").exists()
+
+
+def test_main_without_dirty_does_not_build_dirty_db(tmp_path, monkeypatch):
+    """不帶 `--dirty` 時**絕對不能**順手產生 `data_dirty.sqlite`。
+
+    `make demo-full` 依賴 `make corpus`，而 demo-full 是會真的寫進一台
+    Odoo 的目標。若 `corpus` 順手把髒資料也建在同一個 `data/` 目錄裡，
+    示範現場只要 `--source` 按錯一個字，寫進 Odoo 的就是故意弄壞的資料。
+    """
+    corpus_root = tmp_path / "corpus"
+    case = corpus_root / "case_probe"
+    _write_case(
+        case,
+        seed_sql="INSERT INTO t VALUES ('x');\n",
+        dirty_seed_sql="INSERT INTO t VALUES ('x');\nINSERT INTO t VALUES ('y');\n",
+    )
+
+    import erp_migrai.tools.build_corpus as build_corpus_module
+
+    monkeypatch.setattr(build_corpus_module, "CORPUS_ROOT", corpus_root)
+
+    assert main() == 0
+
+    assert (case / "data" / "data.sqlite").is_file()
+    assert not (case / "data" / "data_dirty.sqlite").exists()
+
+
+def test_main_dirty_returns_nonzero_when_no_case_has_dirty_seed(tmp_path, monkeypatch):
+    """`--dirty` 但沒有任何 case 具備 `seed_dirty.sql` 時，不能默默回傳 0。
+
+    默默成功的代價：Makefile 目標顯示綠燈，下一步才發現
+    `data_dirty.sqlite` 根本不存在——而那一步通常是示範現場。
+    """
+    corpus_root = tmp_path / "corpus"
+    _write_case(corpus_root / "case_probe", seed_sql="INSERT INTO t VALUES ('x');\n")
+
+    import erp_migrai.tools.build_corpus as build_corpus_module
+
+    monkeypatch.setattr(build_corpus_module, "CORPUS_ROOT", corpus_root)
+
+    assert main(["--dirty"]) == 1

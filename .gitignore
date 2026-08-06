@@ -21,6 +21,10 @@ out/
 *.sqlite-journal
 # corpus 的 sqlite 由 seed.sql 生成，不進 git（二進位檔無法在 PR 中審閱）
 corpus/**/data.sqlite
+# 同上：髒資料版由 seed_dirty.sql 經 `make corpus-dirty` 生成。刻意寫成
+# 第二行而不是把上一行改成 data*.sqlite——萬用字元會連日後任何叫
+# data<什麼>.sqlite 的檔案一起吞掉，包含本來就該進 git 的東西。
+corpus/**/data_dirty.sqlite
 
 # superpowers 的執行暫存（進度帳本、任務摘要、review 套件）
 .superpowers/

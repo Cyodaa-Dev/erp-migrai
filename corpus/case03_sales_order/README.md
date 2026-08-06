@@ -194,6 +194,83 @@ Decimal(str(v))  = 333.33
 這是刻意留下的形狀：真實訂單本來就會出現同品號多行（分批出貨、不同單價、
 加急件），把這個隱藏假設在語料階段就逼出來，比讓它活到客戶資料裡好。
 
+## 髒資料版（`data/seed_dirty.sql` → `data_dirty.sqlite`）
+
+同一份 `src/schema.sql`，換一份 seed：`make corpus-dirty`
+（= `uv run python -m erp_migrai.tools.build_corpus --dirty`）產生
+`data/data_dirty.sqlite`（4 表 / 23 列，同樣不進 git）。前 13 列與
+`seed.sql` 完全相同，另外 10 列是刻意混入的髒資料。用途是示範「誠實報錯」：
+先用 `data.sqlite` 跑完一次成功的四段管線，再把 `--source` 換成髒的那一份。
+
+⚠️⚠️ **絕對不要拿 `data_dirty.sqlite` 對正式或示範用的 Odoo 跑非
+`--dry-run` 的 `load`。** `make corpus` 刻意不順手產生這份檔案，就是為了
+避免它平白躺在 `data/` 裡等人按錯 `--source`。
+
+### 每一種髒法，以及它實際會在哪裡被抓到
+
+「偵測點」欄是實測（或對 Odoo 17 原始碼查證）的結果，不是期望值：
+
+| # | 髒法 | 髒在哪一列 | 偵測點 |
+|---|---|---|---|
+| ① | 統一編號不是 8 碼數字（`'1234'`） | `cust_mast` C004 | **不檢查**（`identity` transform 只做 `str()`，Odoo 這端沒裝 `base_vat`） |
+| ② | 客戶狀態是 schema 沒定義的 `'X'` | `cust_mast` C005 | **不檢查**，而且**靜默轉換**成 `active=true`（規則的 `value_map` 寫了 `default: true`） |
+| ③ | 負數：信用額度／品號單價與成本／訂單數量 | `cust_mast` C006、`prod_mast` P004、`ord_deta` O0004/2 | **不檢查**（三個目標欄位在 Odoo 都是 `Float`，Odoo 本身也不擋負值） |
+| ④ | 孤兒外鍵三種：單頭→不存在的客戶、明細→不存在的品號、明細→不存在的單頭 | `ord_mast` O0003、`ord_deta` O0004/1、`ord_deta` O0005/1 | **要真的連 Odoo**：`E-4003`。`--dry-run` 抓不到（見下） |
+| ⑤ | 不存在的日期 `'2026-02-30'` | `ord_mast` O0004 | **要真的連 Odoo**：`E-4003` |
+
+### `--dry-run` 對這份髒資料一個錯都不會報——這是正確行為
+
+實測：
+
+```
+$ uv run migrai load --mapping <out>/mapping.json \
+    --source corpus/case03_sales_order/data/data_dirty.sqlite \
+    --source-id dirty-test --out <out> --dry-run
+✓ 載入完成：共 23 筆（created 0、updated 0、failed 0、skipped 23）
+$ echo $?
+0
+```
+
+`events.jsonl` 是**空檔案**（0 行）。原因不是漏檢，而是這三件事的組合：
+
+1. `--dry-run` 定義上就不連 Odoo，所以「Odoo 會不會拒絕這一筆」無從得知；
+   `E-4003` 只有真的呼叫 `load()` 之後才存在。
+2. `loader._decide_row` 的**懸空外鍵偵測只攔「上游那一筆自己轉換失敗」**
+   （`problem_external_ids` 只收 `E-4002` 的受害者）。`C999`／`P999`／
+   `O0005` 從來沒被處理過，不在那個集合裡，所以不會命中。
+3. 值層級的髒（①②③）本來就沒有任何一條規則要求 migrai 去驗——
+   `identity` 不驗格式，`value_map` 有 `default` 就一定查得到答案。
+
+**工具只報它真的驗過的事**，這正是要示範的東西。想讓 ② 變成
+`E-4002`，把規則檔裡的 `default` 拿掉即可（`transform._apply_value_map`
+在 `default` 為 `None` 時會拋 `TransformError`）。
+
+### `--dry-run` 抓得到的是**結構**層級的髒
+
+實測（拿 `data_dirty.sqlite` 的副本各做一處結構破壞）：
+
+| 破壞 | 輸出 | exit code |
+|---|---|---|
+| `ALTER TABLE cust_mast DROP COLUMN cust_tel` | `[E-4001] mapping.json 提到 cust_mast.cust_tel，但來源資料庫沒有這些欄位——mapping 與 source 可能不是同一次 scan 的產物` | 1 |
+| `DROP TABLE prod_mast` | `[E-4001] 載入計畫建立失敗，中止整場載入：表 'prod_mast' 不存在於來源資料庫 …` | 1 |
+
+`E-4001` 會**中止整場載入**，所以這兩種破壞不能混進 `seed_dirty.sql`
+——混進去的話後面 10 列值層級的髒一列都跑不到。
+
+### `verify` 的 `E-5001`／`E-5002` 必須連 Odoo
+
+`migrai verify` 沒有 `--dry-run`，`--odoo-url`／`--odoo-db`／`--odoo-user`
+都是 required（見 `migrai verify --help`）。它比的是「來源 `ord_deta` 全表
+`SUM(ord_qty × ord_price)`」對「Odoo `sale.order.line.price_subtotal` 合計」
+——**不是**拿明細去對單頭（`schema.sql` 的 `ord_mast` 根本沒有金額欄位）。
+因此髒資料要讓金額對不起來，唯一的路徑是「有明細沒能寫進 Odoo」，也就是
+髒法 ④ 的連鎖結果。來源側數字（手算，供對帳用）：
+
+| 項目 | 數值 |
+|---|---|
+| `ord_deta` 來源列數 | 9 |
+| 來源 `SUM(ord_qty × ord_price)` | `26999.9900`（乾淨 5 行）＋ `2000.0000` ＋ `250.0000` ＋ `-3000.0000` ＋ `1000.0000` = **`27249.9900`** |
+
 ## 檔案
 
 | 檔案 | 用途 |
@@ -201,6 +278,7 @@ Decimal(str(v))  = 333.33
 | `src/so_maintain.4gl` | 合成 Genero 程式（單頭＋明細雙檔維護＋CURSOR） |
 | `src/schema.sql` | T100 風格來源表 DDL（`cust_mast`／`prod_mast`／`ord_mast`／`ord_deta`） |
 | `data/seed.sql` | 合成來源資料。`data.sqlite` 不進 git，由 `make corpus` 生成 |
+| `data/seed_dirty.sql` | 合成**髒**來源資料（示範「誠實報錯」用）。`data_dirty.sqlite` 不進 git，由 `make corpus-dirty` 生成 |
 | `expected/inventory.json` | golden：`migrai scan` 應該吐出的內容 |
 | `expected/mapping.json` | golden：`migrai map` 應該吐出的內容 |
 | `../../src/erp_migrai/mapping/rules/sale_order.yaml` | 這個 case 用到的映射規則（`prod_mast`／`ord_mast`／`ord_deta` 三張表） |
