@@ -3,16 +3,16 @@
   "inventory_synthetic": true,
   "stats": {
     "source_columns": 38,
-    "mapped_columns": 29,
-    "coverage_percent": 76,
-    "auto": 29,
+    "mapped_columns": 27,
+    "coverage_percent": 71,
+    "auto": 27,
     "suggested": 0,
     "needs_human": 0
   },
   "models": [
     {
       "source_table": "item_mast",
-      "target_model": "product.template",
+      "target_model": "product.product",
       "confidence": 100,
       "tier": "auto",
       "reasons": [
@@ -73,7 +73,7 @@
         "type": "DECIMAL(15,4)"
       },
       "target": {
-        "model": "product.template",
+        "model": "product.product",
         "field": "standard_price",
         "type": "float"
       },
@@ -98,7 +98,7 @@
         "type": "VARCHAR(80)"
       },
       "target": {
-        "model": "product.template",
+        "model": "product.product",
         "field": "name",
         "type": "char"
       },
@@ -123,7 +123,7 @@
         "type": "CHAR(20)"
       },
       "target": {
-        "model": "product.template",
+        "model": "product.product",
         "field": "default_code",
         "type": "char"
       },
@@ -148,7 +148,7 @@
         "type": "DECIMAL(15,4)"
       },
       "target": {
-        "model": "product.template",
+        "model": "product.product",
         "field": "list_price",
         "type": "float"
       },
@@ -169,36 +169,11 @@
     {
       "source": {
         "table": "item_mast",
-        "column": "item_spec",
-        "type": "VARCHAR(120)"
-      },
-      "target": {
-        "model": "product.template",
-        "field": "description",
-        "type": "html"
-      },
-      "transform": {
-        "kind": "identity",
-        "value_map": null,
-        "default": null,
-        "value": null,
-        "ref_table": null,
-        "ref_column": null
-      },
-      "confidence": 100,
-      "tier": "auto",
-      "reasons": [
-        "命中欄位規則：subcontract.yaml#item_mast.item_spec"
-      ]
-    },
-    {
-      "source": {
-        "table": "item_mast",
         "column": "item_stus",
         "type": "CHAR(1)"
       },
       "target": {
-        "model": "product.template",
+        "model": "product.product",
         "field": "active",
         "type": "boolean"
       },
@@ -231,12 +206,12 @@
         "type": "many2one"
       },
       "transform": {
-        "kind": "identity",
+        "kind": "reference",
         "value_map": null,
         "default": null,
         "value": null,
-        "ref_table": null,
-        "ref_column": null
+        "ref_table": "item_mast",
+        "ref_column": "item_no"
       },
       "confidence": 100,
       "tier": "auto",
@@ -256,12 +231,12 @@
         "type": "many2one"
       },
       "transform": {
-        "kind": "identity",
+        "kind": "reference",
         "value_map": null,
         "default": null,
         "value": null,
-        "ref_table": null,
-        "ref_column": null
+        "ref_table": "sub_ord",
+        "ref_column": "sub_no"
       },
       "confidence": 100,
       "tier": "auto",
@@ -406,12 +381,12 @@
         "type": "many2one"
       },
       "transform": {
-        "kind": "identity",
+        "kind": "reference",
         "value_map": null,
         "default": null,
         "value": null,
-        "ref_table": null,
-        "ref_column": null
+        "ref_table": "vend_mast",
+        "ref_column": "vend_no"
       },
       "confidence": 100,
       "tier": "auto",
@@ -709,12 +684,12 @@
         "type": "many2one"
       },
       "transform": {
-        "kind": "identity",
+        "kind": "reference",
         "value_map": null,
         "default": null,
         "value": null,
-        "ref_table": null,
-        "ref_column": null
+        "ref_table": "item_mast",
+        "ref_column": "item_no"
       },
       "confidence": 100,
       "tier": "auto",
@@ -771,36 +746,6 @@
       "reasons": [
         "命中欄位規則：subcontract.yaml#wo_mast.wo_qty"
       ]
-    },
-    {
-      "source": {
-        "table": "wo_mast",
-        "column": "wo_stus",
-        "type": "CHAR(2)"
-      },
-      "target": {
-        "model": "mrp.production",
-        "field": "state",
-        "type": "selection"
-      },
-      "transform": {
-        "kind": "value_map",
-        "value_map": {
-          "10": "draft",
-          "20": "confirmed",
-          "30": "progress",
-          "90": "done"
-        },
-        "default": "draft",
-        "value": null,
-        "ref_table": null,
-        "ref_column": null
-      },
-      "confidence": 100,
-      "tier": "auto",
-      "reasons": [
-        "命中欄位規則：subcontract.yaml#wo_mast.wo_stus"
-      ]
     }
   ],
   "unmapped": [
@@ -820,6 +765,12 @@
       "table": "item_mast",
       "column": "item_life",
       "type": "INTEGER",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "item_mast",
+      "column": "item_spec",
+      "type": "VARCHAR(120)",
       "reason": "catalog 中找不到型別相容且名稱相近的欄位"
     },
     {
@@ -856,6 +807,12 @@
       "table": "wc_mast",
       "column": "wc_outs",
       "type": "CHAR(1)",
+      "reason": "catalog 中找不到型別相容且名稱相近的欄位"
+    },
+    {
+      "table": "wo_mast",
+      "column": "wo_stus",
+      "type": "CHAR(2)",
       "reason": "catalog 中找不到型別相容且名稱相近的欄位"
     }
   ],
